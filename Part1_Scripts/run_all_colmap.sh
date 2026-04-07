@@ -66,3 +66,15 @@ for i in "${!PATHS[@]}"; do
 done
 # echo "🎉 所有 5 个数据集全部处理完毕！准备自动关机省钱..."
 # shutdown
+
+
+#训练指令
+# cd /root/autodl-tmp/AIAA3201_3DGS_Project/Part1_Scripts
+# chmod +x clean_data.sh run_all_colmap.sh 仅第一次执行
+# ./clean_data.sh 仅执行一次，处理好后不再执行
+
+# 后台运行防止训练中断 + 保存训练日志到.txt文件
+# nohup ./run_all_colmap.sh > training_log_colmap.txt 2>&1 &
+
+# 实时监控运行进度
+# tail -f training_log_colmap.txt
