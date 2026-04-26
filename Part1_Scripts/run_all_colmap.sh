@@ -9,8 +9,8 @@ EXP_BASE_DIR="/root/autodl-tmp/AIAA3201_3DGS_Project/experiments"
 # 极其关键：第一行的 405841 路径现在深入到了 FRONT！
 PATHS=(
     # "/root/autodl-fs/405841/FRONT"
-    # "/root/autodl-fs/DL3DV-2"
-    "/root/autodl-fs/Re10k-1"
+    "/root/autodl-fs/DL3DV-2-200images"
+    # "/root/autodl-fs/Re10k-1"
     # "/root/autodl-fs/tandt_truck_ours"
     # "/root/autodl-fs/tandt_train_ours"
     # "/root/autodl-fs/360_treehill_ours_4"
@@ -19,8 +19,8 @@ PATHS=(
 
 NAMES=(
     # "405841"
-    # "DL3DV-2"
-    "Re10k-1"
+    "DL3DV-2-200images"
+    # "Re10k-1"
     # "tandt_truck"
     # "tandt_train"
     # "360_treehill_4"

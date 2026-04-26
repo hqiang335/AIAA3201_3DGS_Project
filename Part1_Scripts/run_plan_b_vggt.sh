@@ -1,34 +1,98 @@
 #!/bin/bash
-# 【脚本说明】方案 B：VGGT 初始化的后半段自动化流水线
+# 【精准制导沙盒版】全自动流水线：从零开始初始化、训练、评估所有 5 个场景
+# 👇 [新增 1] 安全锁：遇到任何一个报错（哪怕是找不到文件），立刻终止整个脚本！不会执行到最后的关机。
+set -e
 
-DATASET_BASE_DIR="/root/autodl-fs"
-EXP_BASE_DIR="/root/autodl-tmp/AIAA3201_3DGS_Project/experiments"
 CODE_DIR="/root/autodl-tmp/AIAA3201_3DGS_Project/third_party/gaussian-splatting"
+EXP_BASE_DIR="/root/autodl-tmp/AIAA3201_3DGS_Project/experiments"
 
-# 同样遍历这 5 个数据集
-DATASETS=("Re10k-1" "405841" "DL3DV-2" "360_extra_scenes" "tandt_db")
+# 极其关键：第一行的 405841 路径现在深入到了 FRONT！
+PATHS=(
+    # "/root/autodl-fs/405841/FRONT"
+    # "/root/autodl-fs/VGGT-colmap/tandt_truck_ours__frames220of251__conf1.001__pts500000__grid48__dist20__noba"
+    "/root/autodl-fs/VGGT-colmap-noBA/tandt_truck_ours"
+    # "/root/autodl-fs/Re10k-1"
+    # "/root/autodl-fs/tandt_truck_ours"
+    # "/root/autodl-fs/tandt_train_ours"
+    # "/root/autodl-fs/360_treehill_ours_4"
+    # "/root/autodl-fs/360_flowers_ours_4"
+)
 
-for DATASET_NAME in "${DATASETS[@]}"; do
-    echo "================================================================"
-    echo " 🚀 开始处理数据集: ${DATASET_NAME} | 方案: VGGT 初始化"
-    echo "================================================================"
+NAMES=(
+    # "405841"
+    # "VGGT-truck_220images-500000points-conf1.001-grid48-dist20-距离约束"
+    "VGGT-colmap-tandt_truck_ours-noBA"
+    # "Re10k-1"
+    # "tandt_truck"
+    # "tandt_train"
+    # "360_treehill_4"
+    # "360_flowers_4"
+)
+
+for i in "${!PATHS[@]}"; do    
+    TARGET_PATH="${PATHS[$i]}"
+    DATASET_NAME="${NAMES[$i]}"
     
-    # 注意这里的输入路径！我们在名字后面加了 _vggt，去找队友的数据
-    INPUT_PATH="${DATASET_BASE_DIR}/${DATASET_NAME}_vggt"
-    OUTPUT_PATH="${EXP_BASE_DIR}/exp_Part1_${DATASET_NAME}_vggt"
+    # --- 核心逻辑：自动检查并生成不冲突的文件夹名 ---
+    BASE_OUTPUT_NAME="exp_Part1_${DATASET_NAME}_colmap"
+    OUTPUT_DIR="${EXP_BASE_DIR}/${BASE_OUTPUT_NAME}"
     
-    # 跳过第一站，直接进入第二站：3DGS 训练
-    echo ">>> [1/3] 使用队友的 VGGT 点云开始 3DGS 训练..."
-    time python ${CODE_DIR}/train.py -s ${INPUT_PATH} -m ${OUTPUT_PATH} --eval
+    COUNTER=2
+    # 如果文件夹已存在，则进入循环寻找新名字
+    while [ -d "$OUTPUT_DIR" ]; do
+        # 构造新名字，如：exp_2_Part1_tandt_truck_colmap
+        NEW_NAME="exp_${COUNTER}_Part1_${DATASET_NAME}_colmap"
+        OUTPUT_DIR="${EXP_BASE_DIR}/${NEW_NAME}"
+        ((COUNTER++))
+    done
     
-    # 第三站：离线渲染照片
-    echo ">>> [2/3] 开始渲染测试集照片..."
-    python ${CODE_DIR}/render.py -m ${OUTPUT_PATH}
+    echo "======================================================="
+    echo " 🚀 正在处理 [${DATASET_NAME}]"
+    echo " 📍 数据路径: ${TARGET_PATH}"
+    echo " 📍 输出路径: ${OUTPUT_DIR}"
+    echo "======================================================="
     
-    # 第四站：计算 PSNR 等指标
-    echo ">>> [3/3] 开始计算评估指标..."
-    python ${CODE_DIR}/metrics.py -m ${OUTPUT_PATH}
+    # echo ">>> [1/4] 执行 COLMAP 初始化提取点云..."
+    # time python ${CODE_DIR}/convert.py -s ${TARGET_PATH}
     
-    echo "✅ ${DATASET_NAME} (VGGT) 处理完毕！模型保存在: ${OUTPUT_PATH}"
-    echo "----------------------------------------------------------------"
+    echo ">>> [2/4] 执行 3DGS 训练..."
+    # 对 low-conf + dense init，先少长点、多清噪，再观察是否能稳定提升最终质量。
+    time python ${CODE_DIR}/train.py \
+        -s ${TARGET_PATH} \
+        -m ${OUTPUT_DIR} \
+        --eval \
+        # --disable_viewer \
+        # --densify_grad_threshold 0.0004 \
+        # --densify_from_iter 2000 \
+        # --densify_until_iter 10000 \
+        # --densification_interval 200 \
+        # --opacity_reset_interval 1500
+    echo ">>> [3/4] 离线渲染测试视角..."
+    python ${CODE_DIR}/render.py -m ${OUTPUT_DIR}
+    
+    echo ">>> [4/4] 计算 PSNR/SSIM/LPIPS..."
+    python ${CODE_DIR}/metrics.py -m ${OUTPUT_DIR}
+    
+    echo "✅ [${DATASET_NAME}] 全部流水线跑完！"
 done
+# echo "🎉 所有 5 个数据集全部处理完毕！准备自动关机省钱..."
+# shutdown
+
+
+#训练指令
+# cd /root/autodl-tmp/AIAA3201_3DGS_Project/Part1_Scripts
+# chmod +x run_plan_b_vggt.sh 仅第一次执行
+# ./clean_data.sh 仅执行一次，处理好后不再执行
+
+# 后台运行防止训练中断 + 保存训练日志到.txt文件
+# nohup ./run_plan_b_vggt.sh > VGGT-colmap-tandt_truck_ours-noBA.txt 2>&1 &
+
+# 实时监控运行进度
+# tail -f VGGT-colmap-tandt_truck_ours-noBA.txt
+
+#    默认参数是：
+#       densify_grad_threshold = 0.0002
+#        densify_from_iter = 500
+#        densify_until_iter = 15000
+#        densification_interval = 100
+#        opacity_reset_interval = 1500
