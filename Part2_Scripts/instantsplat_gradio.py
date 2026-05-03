@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff"}
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PART2_EVAL_SCRIPT = PROJECT_ROOT / "Part2_Scripts" / "prepare_instantsplat_part2_eval.py"
 
 def run_process(cmd):
@@ -243,4 +243,5 @@ with gr.Blocks() as demo:
     process_btn.click(fn=process_scene, inputs=[input_dir, output_dir, n_views, iterations], outputs=[output_video, metrics_output])
 
 if __name__ == "__main__":
-    demo.launch()
+    # Gradio 默认只允许 CWD 或临时目录下的文件；输出常在 Part2_Scripts/InstantSplat_outputs
+    demo.launch(allowed_paths=[str(PROJECT_ROOT)])
