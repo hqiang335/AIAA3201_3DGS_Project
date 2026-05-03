@@ -1,0 +1,9 @@
+scene_name=front_405841
+source_images=/root/autodl-fs/405841/FRONT/images
+source_image_count=199
+split_method=official_instantsplat_split_train_test_with_pdf_rate_n_views
+test_count=12
+train_candidate_count=187
+p2_stride=10
+sampled_count=19
+images_mode=official_all_symlinks

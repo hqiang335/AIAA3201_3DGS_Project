@@ -1,0 +1,10 @@
+0	frame_00001.png
+34	frame_00036.png
+67	frame_00069.png
+101	frame_00103.png
+134	frame_00136.png
+169	frame_00171.png
+202	frame_00204.png
+236	frame_00238.png
+269	frame_00271.png
+304	frame_00306.png

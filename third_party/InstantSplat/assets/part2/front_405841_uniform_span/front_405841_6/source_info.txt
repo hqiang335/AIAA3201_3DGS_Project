@@ -1,0 +1,11 @@
+scene_name=front_405841_6
+source_images=/root/autodl-fs/405841/FRONT/images
+source_image_count=199
+split_method=uniform_span_sparse_input_train_test_equal_n_views
+test_count=6
+train_candidate_count=6
+p2_stride=manual
+sampled_count=6
+images_mode=uniform_span_symlinks
+span_start_index=0
+span_end_index=52

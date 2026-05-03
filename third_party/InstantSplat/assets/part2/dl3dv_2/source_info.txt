@@ -1,0 +1,9 @@
+scene_name=dl3dv_2
+source_images=/root/autodl-fs/DL3DV-2/images
+source_image_count=305
+split_method=official_instantsplat_split_train_test_with_pdf_rate_n_views
+test_count=12
+train_candidate_count=293
+p2_stride=30
+sampled_count=10
+images_mode=official_all_symlinks

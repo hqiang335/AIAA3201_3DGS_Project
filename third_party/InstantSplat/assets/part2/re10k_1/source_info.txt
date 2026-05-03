@@ -1,0 +1,9 @@
+scene_name=re10k_1
+source_images=/root/autodl-fs/Re10k-1/images
+source_image_count=279
+split_method=official_instantsplat_split_train_test_with_pdf_rate_n_views
+test_count=12
+train_candidate_count=267
+p2_stride=30
+sampled_count=9
+images_mode=official_all_symlinks
