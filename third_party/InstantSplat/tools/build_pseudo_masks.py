@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -55,6 +56,12 @@ def main() -> None:
 
     with manifest_path.open("r", encoding="utf-8") as f:
         manifest = json.load(f)
+
+    pose_src = _resolve(manifest_dir, manifest["pose_path"])
+    pose_dst = output_dir / pose_src.name
+    if pose_src.resolve() != pose_dst.resolve():
+        shutil.copy2(pose_src, pose_dst)
+    manifest["pose_path"] = pose_dst.name
 
     use_enhanced_pair = args.enhanced_left_dir is not None and args.enhanced_right_dir is not None
     mask_means = []
