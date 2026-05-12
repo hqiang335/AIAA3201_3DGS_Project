@@ -184,6 +184,12 @@ def main() -> None:
         help="Forwarded to train.py (OptimizationParams default unless overridden).",
     )
     parser.add_argument(
+        "--opacity_lr",
+        type=float,
+        default=_TRAIN_LR_DEFAULTS["opacity_lr"],
+        help="Forwarded to train.py (OptimizationParams default unless overridden).",
+    )
+    parser.add_argument(
         "--scaling_lr",
         type=float,
         default=_TRAIN_LR_DEFAULTS["scaling_lr"],
@@ -194,6 +200,42 @@ def main() -> None:
         type=float,
         default=_TRAIN_LR_DEFAULTS["rotation_lr"],
         help="Forwarded to train.py (OptimizationParams default unless overridden).",
+    )
+    parser.add_argument(
+        "--percent_dense",
+        type=float,
+        default=_TRAIN_LR_DEFAULTS["percent_dense"],
+        help="Forwarded to train.py for densification split/clone decisions.",
+    )
+    parser.add_argument(
+        "--densification_interval",
+        type=int,
+        default=_TRAIN_LR_DEFAULTS["densification_interval"],
+        help="Forwarded to train.py; densify every N iterations while enabled.",
+    )
+    parser.add_argument(
+        "--opacity_reset_interval",
+        type=int,
+        default=_TRAIN_LR_DEFAULTS["opacity_reset_interval"],
+        help="Forwarded to train.py; opacity reset interval during densification.",
+    )
+    parser.add_argument(
+        "--densify_from_iter",
+        type=int,
+        default=_TRAIN_LR_DEFAULTS["densify_from_iter"],
+        help="Forwarded to train.py; first iteration after which densification can run.",
+    )
+    parser.add_argument(
+        "--densify_until_iter",
+        type=int,
+        default=_TRAIN_LR_DEFAULTS["densify_until_iter"],
+        help="Forwarded to train.py; densification stops before this iteration.",
+    )
+    parser.add_argument(
+        "--densify_grad_threshold",
+        type=float,
+        default=_TRAIN_LR_DEFAULTS["densify_grad_threshold"],
+        help="Forwarded to train.py; gradient threshold for clone/split.",
     )
 
     args = parser.parse_args()
@@ -269,10 +311,24 @@ def main() -> None:
                 str(args.position_lr_final),
                 "--feature_lr",
                 str(args.feature_lr),
+                "--opacity_lr",
+                str(args.opacity_lr),
                 "--scaling_lr",
                 str(args.scaling_lr),
                 "--rotation_lr",
                 str(args.rotation_lr),
+                "--percent_dense",
+                str(args.percent_dense),
+                "--densification_interval",
+                str(args.densification_interval),
+                "--opacity_reset_interval",
+                str(args.opacity_reset_interval),
+                "--densify_from_iter",
+                str(args.densify_from_iter),
+                "--densify_until_iter",
+                str(args.densify_until_iter),
+                "--densify_grad_threshold",
+                str(args.densify_grad_threshold),
             ]
         )
         _run(root / "train.py", train_cmd[1:], root, log_file)

@@ -108,8 +108,15 @@ def default_train_learning_rates() -> dict[str, float]:
             "position_lr_init",
             "position_lr_final",
             "feature_lr",
+            "opacity_lr",
             "scaling_lr",
             "rotation_lr",
+            "percent_dense",
+            "densification_interval",
+            "opacity_reset_interval",
+            "densify_from_iter",
+            "densify_until_iter",
+            "densify_grad_threshold",
         }
     )
     return {a.dest: a.default for a in parser._actions if getattr(a, "dest", None) in keys}
