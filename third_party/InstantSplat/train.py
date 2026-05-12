@@ -11,12 +11,16 @@
 
 import os
 import sys
+import json
+import random
+from pathlib import Path
 from random import randint
 from time import time
 
 import numpy as np
 import torch
 import torchvision
+from PIL import Image
 from tqdm import tqdm
 from argparse import ArgumentParser, Namespace
 
@@ -26,10 +30,11 @@ from scene import Scene, GaussianModel
 from scene.cameras import Camera
 from utils.camera_utils import generate_interpolated_path
 from utils.general_utils import safe_state
+from utils.general_utils import PILtoTorch
 from utils.graphics_utils import getWorld2View2_torch
 from utils.image_utils import psnr
 from utils.loss_utils import l1_loss, ssim
-from utils.pose_utils import get_camera_from_tensor
+from utils.pose_utils import get_camera_from_tensor, get_tensor_from_camera
 from utils.sfm_utils import save_time
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -85,6 +90,86 @@ def load_and_prepare_confidence(confidence_path, device='cuda', scale=(0.1, 1.0)
     return lr_modifiers
 
 
+def _resolve_manifest_path(manifest_path: str, model_path: str) -> Path:
+    path = Path(manifest_path)
+    if path.is_absolute():
+        return path
+    candidate = Path(model_path) / path
+    if candidate.exists():
+        return candidate
+    return path.resolve()
+
+
+def _resolve_relative_path(base_dir: Path, path_value: str) -> Path:
+    path = Path(path_value)
+    return path if path.is_absolute() else base_dir / path
+
+
+def load_pseudo_cameras(opt, scene, train_cams):
+    if not getattr(opt, "use_pseudo_views", False):
+        return []
+    manifest_value = getattr(opt, "pseudo_manifest", "")
+    if not manifest_value:
+        raise ValueError("--use_pseudo_views requires --pseudo_manifest")
+
+    manifest_path = _resolve_manifest_path(manifest_value, scene.model_path)
+    with manifest_path.open("r", encoding="utf-8") as f:
+        manifest = json.load(f)
+    manifest_dir = manifest_path.parent
+    pose_path = _resolve_relative_path(manifest_dir, manifest["pose_path"])
+    poses = np.load(pose_path)
+
+    if not train_cams:
+        raise ValueError("Cannot build pseudo cameras without real training cameras.")
+    template = train_cams[0]
+    resolution = (template.image_width, template.image_height)
+
+    pseudo_cameras = []
+    for idx, view in enumerate(manifest.get("views", [])):
+        if "image_path" not in view or "mask_path" not in view:
+            raise ValueError(
+                f"Pseudo view {idx} is missing image_path/mask_path. "
+                "Run tools/build_pseudo_masks.py first."
+            )
+        pose = poses[int(view["pose_index"])]
+        if pose.shape == (3, 4):
+            pose_4x4 = np.eye(4, dtype=np.float32)
+            pose_4x4[:3, :4] = pose
+            pose = pose_4x4
+
+        image_path = _resolve_relative_path(manifest_dir, view["image_path"])
+        mask_path = _resolve_relative_path(manifest_dir, view["mask_path"])
+        image = Image.open(image_path).convert("RGB")
+        mask_image = Image.open(mask_path).convert("L")
+        image_tensor = PILtoTorch(image, resolution)[:3, ...]
+        mask_tensor = PILtoTorch(mask_image, resolution)[:1, ...].clamp(0.0, 1.0).cuda()
+
+        cam = Camera(
+            colmap_id=100000 + idx,
+            R=pose[:3, :3].transpose(),
+            T=pose[:3, 3],
+            FoVx=template.FoVx,
+            FoVy=template.FoVy,
+            image=image_tensor,
+            gt_alpha_mask=None,
+            image_name=view.get("image_name", f"pseudo_{idx:05d}"),
+            uid=idx,
+            data_device=template.data_device,
+        )
+        cam.is_pseudo = True
+        cam.confidence_mask = mask_tensor
+        cam.loss_weight = float(view.get("loss_weight", 1.0))
+        cam.fixed_camera_pose = get_tensor_from_camera(cam.world_view_transform.transpose(0, 1)).detach()
+        pseudo_cameras.append(cam)
+
+    if not pseudo_cameras:
+        raise ValueError(f"No pseudo views found in {manifest_path}")
+    mask_mean = torch.stack([cam.confidence_mask.mean().detach().cpu() for cam in pseudo_cameras]).mean().item()
+    print(f"Loaded pseudo cameras: {len(pseudo_cameras)} from {manifest_path}")
+    print(f"Pseudo confidence mask mean: {mask_mean:.4f}")
+    return pseudo_cameras
+
+
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
 
     first_iter = 0
@@ -115,6 +200,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gaussians.restore(model_params, opt)
 
     train_cams_init = scene.getTrainCameras().copy()
+    pseudo_cameras = load_pseudo_cameras(opt, scene, train_cams_init)
     for save_iter in saving_iterations:
         os.makedirs(scene.model_path + f'/pose/ours_{save_iter}', exist_ok=True)
         save_pose(scene.model_path + f'/pose/ours_{save_iter}/pose_org.npy', gaussians.P, train_cams_init)
@@ -126,6 +212,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     viewpoint_stack = scene.getTrainCameras().copy()
     viewpoint_indices = list(range(len(viewpoint_stack)))
+    pseudo_stack = pseudo_cameras.copy()
     ema_loss_for_log = 0.0
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")    
@@ -167,14 +254,26 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
 
-        # Pick a random Camera
-        if not viewpoint_stack:
-            viewpoint_stack = scene.getTrainCameras().copy()
-            viewpoint_indices = list(range(len(viewpoint_stack)))
-        rand_idx = randint(0, len(viewpoint_indices) - 1)
-        viewpoint_cam = viewpoint_stack.pop(rand_idx)
-        vind = viewpoint_indices.pop(rand_idx)
-        pose = gaussians.get_RT(viewpoint_cam.uid)
+        # Pick a random Camera. Pseudo views are fixed-pose, masked, low-weight supervision.
+        use_pseudo = (
+            len(pseudo_cameras) > 0
+            and iteration >= opt.pseudo_start_iter
+            and random.random() < opt.pseudo_sample_ratio
+        )
+        if use_pseudo:
+            if not pseudo_stack:
+                pseudo_stack = pseudo_cameras.copy()
+            rand_idx = randint(0, len(pseudo_stack) - 1)
+            viewpoint_cam = pseudo_stack.pop(rand_idx)
+            pose = viewpoint_cam.fixed_camera_pose
+        else:
+            if not viewpoint_stack:
+                viewpoint_stack = scene.getTrainCameras().copy()
+                viewpoint_indices = list(range(len(viewpoint_stack)))
+            rand_idx = randint(0, len(viewpoint_indices) - 1)
+            viewpoint_cam = viewpoint_stack.pop(rand_idx)
+            viewpoint_indices.pop(rand_idx)
+            pose = gaussians.get_RT(viewpoint_cam.uid)
 
         # Render
         if (iteration - 1) == debug_from:
@@ -187,12 +286,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = l1_loss(image, gt_image)
-        if FUSED_SSIM_AVAILABLE:
-            ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
+        if getattr(viewpoint_cam, "is_pseudo", False):
+            mask = viewpoint_cam.confidence_mask.cuda().expand_as(image)
+            Ll1 = (torch.abs(image - gt_image) * mask).sum() / (mask.sum() + 1e-6)
+            loss = opt.pseudo_loss_weight * viewpoint_cam.loss_weight * Ll1
         else:
-            ssim_value = ssim(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
+            Ll1 = l1_loss(image, gt_image)
+            if FUSED_SSIM_AVAILABLE:
+                ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
+            else:
+                ssim_value = ssim(image, gt_image)
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
         loss.backward()
         iter_end.record()
         # for param_group in gaussians.optimizer.param_groups:
@@ -212,7 +316,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.close()
 
             # Densification
-            if opt.use_densification and iteration < opt.densify_until_iter:
+            allow_densification = not getattr(viewpoint_cam, "is_pseudo", False) or opt.pseudo_use_densification
+            if opt.use_densification and allow_densification and iteration < opt.densify_until_iter:
                 # Keep track of max radii in image-space for pruning.
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)

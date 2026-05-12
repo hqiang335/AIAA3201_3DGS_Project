@@ -97,6 +97,12 @@ class OptimizationParams(ParamGroup):
         self.optim_pose = False
         self.pose_freeze_iters = 0
         self.pose_lr_scale = 1.0
+        self.use_pseudo_views = False
+        self.pseudo_manifest = ""
+        self.pseudo_start_iter = 1000
+        self.pseudo_loss_weight = 0.1
+        self.pseudo_sample_ratio = 0.25
+        self.pseudo_use_densification = False
         super().__init__(parser, "Optimization Parameters")
 
 def default_train_learning_rates() -> dict[str, float]:

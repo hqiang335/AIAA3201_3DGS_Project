@@ -237,6 +237,12 @@ def main() -> None:
         default=_TRAIN_LR_DEFAULTS["densify_grad_threshold"],
         help="Forwarded to train.py; gradient threshold for clone/split.",
     )
+    parser.add_argument("--use_pseudo_views", action="store_true", help="Forward pseudo-view supervision options to train.py.")
+    parser.add_argument("--pseudo_manifest", type=str, default="", help="Pseudo-view train manifest path.")
+    parser.add_argument("--pseudo_start_iter", type=int, default=1000, help="First iteration that can sample pseudo views.")
+    parser.add_argument("--pseudo_loss_weight", type=float, default=0.1, help="Global pseudo-view loss multiplier.")
+    parser.add_argument("--pseudo_sample_ratio", type=float, default=0.25, help="Probability of sampling a pseudo view per iteration.")
+    parser.add_argument("--pseudo_use_densification", action="store_true", help="Allow pseudo views to update densification stats.")
 
     args = parser.parse_args()
     source = args.source_path.resolve()
@@ -303,6 +309,22 @@ def main() -> None:
             train_cmd.append("--optim_pose")
         if args.use_densification:
             train_cmd.append("--use_densification")
+        if args.use_pseudo_views:
+            train_cmd.extend(
+                [
+                    "--use_pseudo_views",
+                    "--pseudo_manifest",
+                    args.pseudo_manifest,
+                    "--pseudo_start_iter",
+                    str(args.pseudo_start_iter),
+                    "--pseudo_loss_weight",
+                    str(args.pseudo_loss_weight),
+                    "--pseudo_sample_ratio",
+                    str(args.pseudo_sample_ratio),
+                ]
+            )
+            if args.pseudo_use_densification:
+                train_cmd.append("--pseudo_use_densification")
         train_cmd.extend(
             [
                 "--position_lr_init",
