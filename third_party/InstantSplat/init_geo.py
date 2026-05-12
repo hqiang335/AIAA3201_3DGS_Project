@@ -1,4 +1,5 @@
 import os
+import json
 import argparse
 import torch
 import numpy as np
@@ -17,12 +18,12 @@ from dust3r.utils.device import to_numpy
 from dust3r.utils.geometry import inv
 from dust3r.cloud_opt import global_aligner, GlobalAlignerMode
 from utils.sfm_utils import (save_intrinsics, save_extrinsic, save_points3D, save_time, save_images_and_masks,
-                             init_filestructure, get_sorted_image_files, split_train_test, load_images, compute_co_vis_masks)
+                             init_filestructure, get_sorted_image_files, split_train_eval_views, load_images, compute_co_vis_masks)
 from utils.camera_utils import generate_interpolated_path
 
 
 def main(source_path, model_path, ckpt_path, device, batch_size, image_size, schedule, lr, niter,
-         min_conf_thr, llffhold, n_views, co_vis_dsp, depth_thre, conf_aware_ranking=False,
+         min_conf_thr, llffhold, n_views, n_test, co_vis_dsp, depth_thre, conf_aware_ranking=False,
          focal_avg=False, infer_video=False, scene_graph="complete"):
 
     # ---------------- (1) Load model and images ----------------  
@@ -32,8 +33,24 @@ def main(source_path, model_path, ckpt_path, device, batch_size, image_size, sch
     image_files, image_suffix = get_sorted_image_files(image_dir)
     if infer_video:
         train_img_files = image_files
+        test_img_files = []
     else:
-        train_img_files, test_img_files = split_train_test(image_files, llffhold, n_views, verbose=True)
+        train_img_files, test_img_files, train_inds, test_inds = split_train_eval_views(
+            image_files, n_train=n_views, n_test=n_test, verbose=True
+        )
+        mp = Path(model_path)
+        mp.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "schema": "instantsplat_train_test_split_v1",
+            "n_train": len(train_img_files),
+            "n_test": len(test_img_files),
+            "train_indices": train_inds,
+            "test_indices": test_inds,
+            "train_basenames": [Path(p).name for p in train_img_files],
+            "test_basenames": [Path(p).name for p in test_img_files],
+        }
+        with open(mp / "split_manifest.json", "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
     
     # when geometry init, only use train images
     image_files = train_img_files
@@ -144,7 +161,8 @@ if __name__ == "__main__":
     parser.add_argument('--niter', type=int, default=300, help='Number of iterations')
     parser.add_argument('--min_conf_thr', type=float, default=5, help='Minimum confidence threshold')
     parser.add_argument('--llffhold', type=int, default=8, help='')
-    parser.add_argument('--n_views', type=int, default=3, help='')
+    parser.add_argument('--n_views', type=int, default=3, help='Number of training views (uniform subsample from non-test frames)')
+    parser.add_argument('--n_test', type=int, default=12, help='Number of test views (default 12, linspace between frames 1..N-2)')
     # parser.add_argument('--focal_avg', type=bool, default=False, help='')
     parser.add_argument('--focal_avg', action="store_true")
     parser.add_argument('--conf_aware_ranking', action="store_true")
@@ -160,5 +178,5 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     main(args.source_path, args.model_path, args.ckpt_path, args.device, args.batch_size, args.image_size, args.schedule, args.lr, args.niter,         
-          args.min_conf_thr, args.llffhold, args.n_views, args.co_vis_dsp, args.depth_thre,
+          args.min_conf_thr, args.llffhold, args.n_views, args.n_test, args.co_vis_dsp, args.depth_thre,
           args.conf_aware_ranking, args.focal_avg, args.infer_video, args.scene_graph)

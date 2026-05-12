@@ -50,21 +50,67 @@ def save_time(time_dir, process_name, sub_time):
         f.write(f'{process_name}: {formatted_time}\n')
 
 
-def split_train_test(image_files, llffhold=8, n_views=None, verbose=True):
-    test_idx  = np.linspace(1, len(image_files) - 2, num=12, dtype=int)
-    train_idx = [i for i in range(len(image_files)) if i not in test_idx]
+def split_train_eval_views(
+    image_files,
+    n_train,
+    n_test=12,
+    verbose=True,
+):
+    """
+    Hold out a fixed test set, then uniformly subsample training views from the remainder.
 
-    sparse_idx = np.linspace(0, len(train_idx) - 1, num=n_views, dtype=int)
-    train_idx = [train_idx[i] for i in sparse_idx]
+    Test indices match the legacy InstantSplat rule: ``linspace(1, N-2, n_test)`` on the
+    sorted image list (excludes first and last frame indices 0 and N-1 from the test grid ends).
+
+    Training indices: `n_train` uniformly spaced picks from all indices **not** in the test set,
+    in ascending global index order along that candidate pool (same as legacy ``split_train_test``).
+
+    ``image_files`` may be a list of paths or any sequence supporting ``len`` and integer indexing
+    (e.g. `metrics.py` passes a pose array).
+    """
+    n = len(image_files)
+    if n_train is None or n_train < 1:
+        raise ValueError("n_train must be a positive integer")
+    if n_test < 1:
+        raise ValueError("n_test must be a positive integer")
+    if n < 3:
+        raise ValueError(f"Need at least 3 frames for the default test index rule, got {n}")
+
+    test_idx = np.linspace(1, n - 2, num=n_test, dtype=int)
+    test_set = {int(x) for x in test_idx.tolist()}
+    train_pool = [i for i in range(n) if i not in test_set]
+
+    if len(train_pool) < n_train:
+        raise ValueError(
+            f"Not enough training candidates after holding out {n_test} test slots: "
+            f"pool={len(train_pool)}, n_train={n_train}, images={n}"
+        )
+
+    sparse_idx = np.linspace(0, len(train_pool) - 1, num=n_train, dtype=int)
+    train_indices = [train_pool[int(i)] for i in sparse_idx]
+    test_indices = [int(x) for x in test_idx.tolist()]
 
     if verbose:
         print(">> Spliting Train-Test Set: ")
-        # print(" - sparse_idx:         ", sparse_idx)
-        print(" - train_set_indices:  ", train_idx)
-        print(" - test_set_indices:   ", test_idx)
-    train_img_files = [image_files[i] for i in train_idx]
-    test_img_files = [image_files[i] for i in test_idx]
+        print(" - train_set_indices:  ", train_indices)
+        print(" - test_set_indices:   ", test_indices)
 
+    train_img_files = [image_files[i] for i in train_indices]
+    test_img_files = [image_files[i] for i in test_indices]
+    return train_img_files, test_img_files, train_indices, test_indices
+
+
+def split_train_test(image_files, llffhold=8, n_views=None, n_test=12, verbose=True):
+    """
+    Backward-compatible wrapper. ``llffhold`` is unused (kept for call-site compatibility).
+
+    ``n_views`` is the number of **training** views (what `init_geo` calls ``--n_views``).
+    """
+    if n_views is None:
+        raise ValueError("n_views (number of training views) must be set")
+    train_img_files, test_img_files, _, _ = split_train_eval_views(
+        image_files, n_train=n_views, n_test=n_test, verbose=verbose
+    )
     return train_img_files, test_img_files
 
 

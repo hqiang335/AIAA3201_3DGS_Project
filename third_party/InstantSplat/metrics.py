@@ -89,7 +89,7 @@ def evaluate(args):
                 pose_path = pose_dir / method
                 pose_optimized = np.load(pose_path / f'pose_optimized.npy')
                 pose_colmap = read_colmap_gt_pose(args.source_path)
-                gt_train_pose, _ = split_train_test(pose_colmap, llffhold=8, n_views=args.n_views, verbose=False)
+                gt_train_pose, _ = split_train_test(pose_colmap, llffhold=8, n_views=args.n_views, n_test=args.n_test, verbose=False)
 
                 # start to align
                 pose_optimized = torch.from_numpy(pose_optimized)
@@ -135,5 +135,6 @@ if __name__ == "__main__":
     parser.add_argument('--source_path', '-s', required=True, type=str, default=None)
     parser.add_argument('--model_paths', '-m', required=True, nargs="+", type=str, default=[])
     parser.add_argument("--n_views", default=None, type=int)
+    parser.add_argument("--n_test", default=12, type=int, help="Must match init_geo / manifest test count")
     args = parser.parse_args()
     evaluate(args)

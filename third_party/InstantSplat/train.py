@@ -95,6 +95,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     confidence_path = os.path.join(dataset.source_path, f"sparse_{dataset.n_views}/0", "confidence_dsp.npy")
     confidence_lr = load_and_prepare_confidence(confidence_path, device='cuda', scale=(1, 100))
     scene = Scene(dataset, gaussians)
+    if confidence_lr.shape[0] != gaussians.get_xyz.shape[0]:
+        print(
+            "Per-point confidence count does not match initialized Gaussians: "
+            f"{confidence_lr.shape[0]} vs {gaussians.get_xyz.shape[0]}. "
+            "Using uniform per-Gaussian LR."
+        )
+        confidence_lr = torch.ones((gaussians.get_xyz.shape[0], 1), device='cuda')
 
     if opt.pp_optimizer:
         gaussians.training_setup_pp(opt, confidence_lr)                          
@@ -140,9 +147,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         iter_start.record()
 
         gaussians.update_learning_rate(iteration)
+        pose_lr_scale = getattr(opt, "pose_lr_scale", 1.0)
+        if pose_lr_scale != 1.0:
+            for param_group in gaussians.optimizer.param_groups:
+                if param_group.get("name") == "pose":
+                    param_group["lr"] *= pose_lr_scale
 
         if opt.optim_pose==False:
             gaussians.P.requires_grad_(False)
+        elif iteration <= getattr(opt, "pose_freeze_iters", 0):
+            gaussians.P.requires_grad_(False)
+        else:
+            gaussians.P.requires_grad_(True)
 
         # Every 1000 its we increase the levels of SH up to a maximum degree
         if iteration % 1000 == 0:

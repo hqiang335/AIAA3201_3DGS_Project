@@ -9,6 +9,8 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+from __future__ import annotations
+
 from argparse import ArgumentParser, Namespace
 import sys
 import os
@@ -56,6 +58,7 @@ class ModelParams(ParamGroup):
         self.eval = False
         self.n_views = 0
         self.init_scale_from_view_depth = False
+        self.initial_gaussians_path = ""
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -91,7 +94,24 @@ class OptimizationParams(ParamGroup):
         self.random_background = False
         self.pp_optimizer = False
         self.optim_pose = False
+        self.pose_freeze_iters = 0
+        self.pose_lr_scale = 1.0
         super().__init__(parser, "Optimization Parameters")
+
+def default_train_learning_rates() -> dict[str, float]:
+    """Subset of OptimizationParams defaults forwarded to ``train.py`` (tuning knobs)."""
+    parser = ArgumentParser()
+    OptimizationParams(parser)
+    keys = frozenset(
+        {
+            "position_lr_init",
+            "position_lr_final",
+            "feature_lr",
+            "scaling_lr",
+            "rotation_lr",
+        }
+    )
+    return {a.dest: a.default for a in parser._actions if getattr(a, "dest", None) in keys}
 
 def get_combined_args(parser : ArgumentParser):
     cmdlne_string = sys.argv[1:]
