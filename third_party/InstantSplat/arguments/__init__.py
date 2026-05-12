@@ -91,6 +91,7 @@ class OptimizationParams(ParamGroup):
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
+        self.use_densification = False
         self.random_background = False
         self.pp_optimizer = False
         self.optim_pose = False

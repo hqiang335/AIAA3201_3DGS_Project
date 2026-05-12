@@ -103,6 +103,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         )
         confidence_lr = torch.ones((gaussians.get_xyz.shape[0], 1), device='cuda')
 
+    if opt.use_densification and opt.pp_optimizer:
+        raise ValueError("Densification currently supports the standard Adam optimizer only. Use --no_pp_optimizer.")
+
     if opt.pp_optimizer:
         gaussians.training_setup_pp(opt, confidence_lr)                          
     else:
@@ -209,17 +212,20 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.close()
 
             # Densification
-            # if iteration < opt.densify_until_iter:
-                # # Keep track of max radii in image-space for pruning
-                # gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                # gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+            if opt.use_densification and iteration < opt.densify_until_iter:
+                # Keep track of max radii in image-space for pruning.
+                gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
-                # if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-                #     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                #     gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+                if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
+                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                    before_points = gaussians.get_xyz.shape[0]
+                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+                    after_points = gaussians.get_xyz.shape[0]
+                    print(f"\n[ITER {iteration}] Densification points: {before_points} -> {after_points}")
                 
-                # if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
-                #     gaussians.reset_opacity()
+                if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+                    gaussians.reset_opacity()
 
             # Optimizer step
             if iteration < opt.iterations:

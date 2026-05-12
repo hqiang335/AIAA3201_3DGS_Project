@@ -112,6 +112,11 @@ def main() -> None:
     parser.add_argument("--no_pp_optimizer", action="store_true")
     parser.add_argument("--no_optim_pose", action="store_true")
     parser.add_argument(
+        "--use_densification",
+        action="store_true",
+        help="Enable 3DGS clone/split/prune/opacity reset during train.py.",
+    )
+    parser.add_argument(
         "--scene_graph",
         type=str,
         default="complete",
@@ -254,6 +259,8 @@ def main() -> None:
             train_cmd.append("--pp_optimizer")
         if not args.no_optim_pose:
             train_cmd.append("--optim_pose")
+        if args.use_densification:
+            train_cmd.append("--use_densification")
         train_cmd.extend(
             [
                 "--position_lr_init",
