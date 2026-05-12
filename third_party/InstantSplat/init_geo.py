@@ -24,7 +24,9 @@ from utils.camera_utils import generate_interpolated_path
 
 def main(source_path, model_path, ckpt_path, device, batch_size, image_size, schedule, lr, niter,
          min_conf_thr, llffhold, n_views, n_test, co_vis_dsp, depth_thre, conf_aware_ranking=False,
-         focal_avg=False, infer_video=False, scene_graph="complete"):
+         focal_avg=False, infer_video=False, scene_graph="complete", max_init_points=0,
+         point_sampling="grid_uniform_confidence", sampling_grid_size=24, min_point_distance_px=12.0,
+         point_conf_threshold=0.0, sampling_seed=42):
 
     # ---------------- (1) Load model and images ----------------  
     save_path, sparse_0_path, sparse_1_path = init_filestructure(Path(source_path), n_views)
@@ -48,6 +50,14 @@ def main(source_path, model_path, ckpt_path, device, batch_size, image_size, sch
             "test_indices": test_inds,
             "train_basenames": [Path(p).name for p in train_img_files],
             "test_basenames": [Path(p).name for p in test_img_files],
+            "init_point_sampling": {
+                "max_init_points": max_init_points,
+                "point_sampling": point_sampling,
+                "sampling_grid_size": sampling_grid_size,
+                "min_point_distance_px": min_point_distance_px,
+                "point_conf_threshold": point_conf_threshold,
+                "sampling_seed": sampling_seed,
+            },
         }
         with open(mp / "split_manifest.json", "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2)
@@ -141,7 +151,23 @@ def main(source_path, model_path, ckpt_path, device, batch_size, image_size, sch
     save_time(model_path, '[1] init_geo', end_time - start_time)
     save_extrinsic(sparse_0_path, extrinsics_w2c, image_files, image_suffix)
     save_intrinsics(sparse_0_path, focals, org_imgs_shape, imgs.shape, save_focals=True)
-    pts_num = save_points3D(sparse_0_path, imgs, pts3d, confs.reshape(pts3d.shape[0], -1), overlapping_masks, use_masks=co_vis_dsp, save_all_pts=True, save_txt_path=model_path, depth_threshold=depth_thre)
+    pts_num = save_points3D(
+        sparse_0_path,
+        imgs,
+        pts3d,
+        confs.reshape(pts3d.shape[0], -1),
+        overlapping_masks,
+        use_masks=co_vis_dsp,
+        save_all_pts=True,
+        save_txt_path=model_path,
+        depth_threshold=depth_thre,
+        max_pts_num=max_init_points,
+        sampling_strategy=point_sampling,
+        sampling_grid_size=sampling_grid_size,
+        min_point_distance_px=min_point_distance_px,
+        conf_threshold=point_conf_threshold,
+        sampling_seed=sampling_seed,
+    )
     save_images_and_masks(sparse_0_path, n_views, imgs, overlapping_masks, image_files, image_suffix)
     print(f'[INFO] MASt3R Reconstruction is successfully converted to COLMAP files in: {str(sparse_0_path)}')
     print(f'[INFO] Number of points: {pts3d.reshape(-1, 3).shape[0]}')    
@@ -175,8 +201,47 @@ if __name__ == "__main__":
         default='complete',
         help='MASt3R/DUSt3R image graph, e.g. complete, swin-3-noncyclic, logwin-3-noncyclic',
     )
+    parser.add_argument(
+        '--max_init_points',
+        type=int,
+        default=0,
+        help='Maximum points written to sparse_*/0/points3D.ply after co-visible filtering. 0 disables this cap.',
+    )
+    parser.add_argument(
+        '--point_sampling',
+        type=str,
+        default='grid_uniform_confidence',
+        choices=['grid_uniform_confidence', 'confidence_random'],
+        help='Point sampling strategy used when --max_init_points is positive.',
+    )
+    parser.add_argument(
+        '--sampling_grid_size',
+        type=int,
+        default=24,
+        help='Grid size per image side for grid_uniform_confidence sampling. Set 0 to sample per-frame only.',
+    )
+    parser.add_argument(
+        '--min_point_distance_px',
+        type=float,
+        default=12.0,
+        help='Minimum pixel distance between selected points within the same frame.',
+    )
+    parser.add_argument(
+        '--point_conf_threshold',
+        type=float,
+        default=0.0,
+        help='Optional confidence threshold before max-point sampling. 0 disables thresholding.',
+    )
+    parser.add_argument(
+        '--sampling_seed',
+        type=int,
+        default=42,
+        help='Random seed for confidence_random point sampling.',
+    )
 
     args = parser.parse_args()
     main(args.source_path, args.model_path, args.ckpt_path, args.device, args.batch_size, args.image_size, args.schedule, args.lr, args.niter,         
           args.min_conf_thr, args.llffhold, args.n_views, args.n_test, args.co_vis_dsp, args.depth_thre,
-          args.conf_aware_ranking, args.focal_avg, args.infer_video, args.scene_graph)
+          args.conf_aware_ranking, args.focal_avg, args.infer_video, args.scene_graph,
+          args.max_init_points, args.point_sampling, args.sampling_grid_size,
+          args.min_point_distance_px, args.point_conf_threshold, args.sampling_seed)

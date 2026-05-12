@@ -293,7 +293,139 @@ def save_intrinsics(sparse_path, focals, org_imgs_shape, imgs_shape, save_focals
         np.save(sparse_path / 'non_scaled_focals.npy', focals)
 
 
-def save_points3D(sparse_path, imgs, pts3d, confs, masks=None, use_masks=True, save_all_pts=False, save_txt_path=None, depth_threshold=0.1, max_pts_num=150 * 10**10):
+def _can_select_point(occupied_buckets, bucket_size, frame_idx, y, x, min_distance_sq):
+    bucket_y = int(y // bucket_size)
+    bucket_x = int(x // bucket_size)
+    frame_buckets = occupied_buckets[frame_idx]
+
+    for ny in range(bucket_y - 1, bucket_y + 2):
+        for nx in range(bucket_x - 1, bucket_x + 2):
+            for py, px in frame_buckets.get((ny, nx), []):
+                if (py - y) ** 2 + (px - x) ** 2 < min_distance_sq:
+                    return False
+    return True
+
+
+def _register_point(occupied_buckets, bucket_size, frame_idx, y, x):
+    bucket_y = int(y // bucket_size)
+    bucket_x = int(x // bucket_size)
+    occupied_buckets[frame_idx].setdefault((bucket_y, bucket_x), []).append((y, x))
+
+
+def select_grid_uniform_confident_points(conf_maps, valid_mask, max_points, grid_size, min_point_distance_px):
+    """Select high-confidence points while spreading samples across frames and image cells."""
+    valid_count = int(valid_mask.sum())
+    if max_points <= 0 or valid_count <= max_points:
+        return valid_mask
+
+    num_frames, height, width = conf_maps.shape
+    cell_candidates = []
+
+    if grid_size <= 0:
+        for frame_idx in range(num_frames):
+            frame_conf = conf_maps[frame_idx]
+            frame_valid = valid_mask[frame_idx]
+            if not frame_valid.any():
+                continue
+            y_idx, x_idx = np.nonzero(frame_valid)
+            conf_vals = frame_conf[y_idx, x_idx]
+            order = np.argsort(conf_vals)[::-1]
+            frame_idx_arr = np.full(order.size, frame_idx, dtype=np.int32)
+            cell_candidates.append(
+                np.stack([frame_idx_arr, y_idx[order].astype(np.int32), x_idx[order].astype(np.int32)], axis=1)
+            )
+    else:
+        grid_size = max(1, min(int(grid_size), height, width))
+        h_edges = np.linspace(0, height, grid_size + 1, dtype=int)
+        w_edges = np.linspace(0, width, grid_size + 1, dtype=int)
+
+        for frame_idx in range(num_frames):
+            frame_conf = conf_maps[frame_idx]
+            frame_valid = valid_mask[frame_idx]
+            for gh in range(grid_size):
+                h_start, h_end = h_edges[gh], h_edges[gh + 1]
+                for gw in range(grid_size):
+                    w_start, w_end = w_edges[gw], w_edges[gw + 1]
+                    cell_valid = frame_valid[h_start:h_end, w_start:w_end]
+                    if not cell_valid.any():
+                        continue
+
+                    local_y, local_x = np.nonzero(cell_valid)
+                    local_conf = frame_conf[h_start:h_end, w_start:w_end][local_y, local_x]
+                    order = np.argsort(local_conf)[::-1]
+                    y_idx = h_start + local_y[order]
+                    x_idx = w_start + local_x[order]
+                    frame_idx_arr = np.full(order.size, frame_idx, dtype=np.int32)
+                    cell_candidates.append(
+                        np.stack([frame_idx_arr, y_idx.astype(np.int32), x_idx.astype(np.int32)], axis=1)
+                    )
+
+    selected_flat = []
+    candidate_offsets = np.zeros(len(cell_candidates), dtype=np.int32)
+    occupied_buckets = [dict() for _ in range(num_frames)]
+    bucket_size = max(1.0, float(min_point_distance_px))
+    min_distance_sq = float(min_point_distance_px) ** 2
+
+    while len(selected_flat) < max_points:
+        made_progress = False
+        for cell_idx, candidates in enumerate(cell_candidates):
+            offset = candidate_offsets[cell_idx]
+            while offset < len(candidates):
+                frame_idx, y, x = candidates[offset]
+                offset += 1
+                if not _can_select_point(
+                    occupied_buckets,
+                    bucket_size,
+                    int(frame_idx),
+                    int(y),
+                    int(x),
+                    min_distance_sq,
+                ):
+                    continue
+
+                _register_point(occupied_buckets, bucket_size, int(frame_idx), int(y), int(x))
+                flat_idx = np.ravel_multi_index((int(frame_idx), int(y), int(x)), dims=conf_maps.shape)
+                selected_flat.append(flat_idx)
+                made_progress = True
+                break
+            candidate_offsets[cell_idx] = offset
+            if len(selected_flat) >= max_points:
+                break
+        if not made_progress:
+            break
+
+    selected_mask = np.zeros(conf_maps.size, dtype=bool)
+    selected_mask[np.asarray(selected_flat, dtype=np.int64)] = True
+    return selected_mask.reshape(conf_maps.shape)
+
+
+def select_confidence_random_points(conf_maps, valid_mask, max_points, sampling_seed=42):
+    valid_count = int(valid_mask.sum())
+    if max_points <= 0 or valid_count <= max_points:
+        return valid_mask
+
+    valid_indices = np.flatnonzero(valid_mask.reshape(-1))
+    valid_conf = conf_maps.reshape(-1)[valid_indices].astype(np.float64)
+    conf_min = np.min(valid_conf)
+    conf_max = np.max(valid_conf)
+    if conf_max > conf_min:
+        weights = (valid_conf - conf_min) / (conf_max - conf_min)
+    else:
+        weights = np.ones_like(valid_conf)
+    weights = weights + 1.0
+    weights = weights / np.sum(weights)
+    rng = np.random.default_rng(sampling_seed)
+    selected_indices = rng.choice(valid_indices, size=max_points, replace=False, p=weights)
+
+    selected_mask = np.zeros(conf_maps.size, dtype=bool)
+    selected_mask[selected_indices] = True
+    return selected_mask.reshape(valid_mask.shape)
+
+
+def save_points3D(sparse_path, imgs, pts3d, confs, masks=None, use_masks=True, save_all_pts=False,
+                  save_txt_path=None, depth_threshold=0.1, max_pts_num=150 * 10**10,
+                  sampling_strategy="grid_uniform_confidence", sampling_grid_size=24,
+                  min_point_distance_px=12.0, conf_threshold=0.0, sampling_seed=42):
     
     points3D_bin_file = sparse_path / 'points3D.bin'
     points3D_txt_file = sparse_path / 'points3D.txt'
@@ -306,36 +438,67 @@ def save_points3D(sparse_path, imgs, pts3d, confs, masks=None, use_masks=True, s
     if confs is not None:
         np.save(sparse_path / 'confidence.npy', confs)
 
+    num_images = pts3d.shape[0]
+    pts_flat = pts3d.reshape(num_images, -1, 3)
+    col_flat = imgs.reshape(num_images, -1, 3)
+    conf_flat = confs.reshape(num_images, -1)
+
+    image_hw = None
+    if pts3d.ndim == 4 and pts3d.shape[-1] == 3:
+        image_hw = pts3d.shape[1:3]
+
     # Process points and colors
     if use_masks:
         masks = to_numpy(masks)
-        pts = np.concatenate([p[m] for p, m in zip(pts3d, masks)])
-        # pts = np.concatenate([p[m] for p, m in zip(pts3d, masks.reshape(masks.shape[0], -1))])
-        col = np.concatenate([p[m] for p, m in zip(imgs, masks)])
-        confs = np.concatenate([p[m] for p, m in zip(confs, masks.reshape(masks.shape[0], -1))])
+        valid_mask = masks.reshape(num_images, -1).astype(bool)
     else:
-        pts = np.array(pts3d)
-        col = np.array(imgs)
-        confs = np.array(confs)
+        valid_mask = np.ones(conf_flat.shape, dtype=bool)
 
-    pts = pts.reshape(-1, 3)
-    col = col.reshape(-1, 3) * 255.
-    confs = confs.reshape(-1, 1)
+    co_mask_dsp_pts_num = int(valid_mask.sum())
+    conf_threshold_pts_num = co_mask_dsp_pts_num
+    if conf_threshold is not None and conf_threshold > 0:
+        threshold_mask = conf_flat >= conf_threshold
+        thresholded_valid_mask = valid_mask & threshold_mask
+        conf_threshold_pts_num = int(thresholded_valid_mask.sum())
+        if conf_threshold_pts_num > 0:
+            valid_mask = thresholded_valid_mask
+        else:
+            print(
+                f"Confidence threshold {conf_threshold} removed all points; "
+                "falling back to the co-visible mask only."
+            )
+            conf_threshold_pts_num = co_mask_dsp_pts_num
 
-    co_mask_dsp_pts_num = pts.shape[0]
-    if pts.shape[0] > max_pts_num:
-        print(f'Downsampling points from {pts.shape[0]} to {max_pts_num}')
-        # Normalize confidences to range (0, 1)
-        confs_min = np.min(confs)
-        confs_max = np.max(confs)
-        confs = (confs - confs_min) / (confs_max - confs_min)
-        confs = confs + 1
-        weights = confs.reshape(-1) / np.sum(confs)        
-        indices = np.random.choice(pts.shape[0], max_pts_num, replace=False, p=weights)
-        pts = pts[indices]
-        col = col[indices]
-        confs = confs[indices]
-        conf_dsp_pts_num = pts.shape[0]
+    try:
+        max_pts_num = int(max_pts_num)
+    except (TypeError, ValueError):
+        max_pts_num = 0
+
+    selected_mask = valid_mask
+    if max_pts_num > 0 and int(valid_mask.sum()) > max_pts_num:
+        print(f"Downsampling points from {int(valid_mask.sum())} to {max_pts_num} using {sampling_strategy}")
+        if sampling_strategy == "grid_uniform_confidence" and image_hw is not None:
+            h, w = image_hw
+            selected_mask = select_grid_uniform_confident_points(
+                conf_flat.reshape(num_images, h, w),
+                valid_mask.reshape(num_images, h, w),
+                max_pts_num,
+                sampling_grid_size,
+                min_point_distance_px,
+            ).reshape(num_images, -1)
+        elif sampling_strategy == "confidence_random":
+            selected_mask = select_confidence_random_points(conf_flat, valid_mask, max_pts_num, sampling_seed)
+        else:
+            raise ValueError(
+                "Unknown or unsupported point sampling strategy "
+                f"'{sampling_strategy}'. Use 'grid_uniform_confidence' or 'confidence_random'."
+            )
+
+    pts = pts_flat[selected_mask].reshape(-1, 3)
+    col = col_flat[selected_mask].reshape(-1, 3) * 255.
+    confs = conf_flat[selected_mask].reshape(-1, 1)
+    conf_dsp_pts_num = pts.shape[0]
+
     if confs is not None:
         np.save(sparse_path / 'confidence_dsp.npy', confs)
 
@@ -353,9 +516,15 @@ def save_points3D(sparse_path, imgs, pts3d, confs, masks=None, use_masks=True, s
         f.write(f"Vanilla points num: {pts3d.reshape(-1, 3).shape[0]}\n")
         f.write(f"Co_Mask DSP points num: {co_mask_dsp_pts_num}\n")
         f.write(f"Co_Mask DSP ratio: {co_mask_dsp_pts_num / pts3d.reshape(-1, 3).shape[0]}\n")
-        if co_mask_dsp_pts_num > max_pts_num:
-            f.write(f"Conf_Mask DSP points num: {conf_dsp_pts_num}\n")
-            f.write(f"Conf_Mask DSP ratio: {conf_dsp_pts_num / pts3d.reshape(-1, 3).shape[0]}\n")
+        f.write(f"Confidence threshold: {conf_threshold}\n")
+        f.write(f"Confidence-threshold points num: {conf_threshold_pts_num}\n")
+        f.write(f"Point sampling strategy: {sampling_strategy}\n")
+        f.write(f"Max init points: {max_pts_num}\n")
+        f.write(f"Sampling grid size: {sampling_grid_size}\n")
+        f.write(f"Min point distance px: {min_point_distance_px}\n")
+        f.write(f"Sampling seed: {sampling_seed}\n")
+        f.write(f"Final DSP points num: {conf_dsp_pts_num}\n")
+        f.write(f"Final DSP ratio: {conf_dsp_pts_num / pts3d.reshape(-1, 3).shape[0]}\n")
         f.write("\n")
     
     return pts.shape[0]
