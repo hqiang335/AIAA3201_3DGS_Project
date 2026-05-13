@@ -19,6 +19,7 @@ from time import time
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torchvision
 from PIL import Image
 from tqdm import tqdm
@@ -102,7 +103,28 @@ def _resolve_manifest_path(manifest_path: str, model_path: str) -> Path:
 
 def _resolve_relative_path(base_dir: Path, path_value: str) -> Path:
     path = Path(path_value)
-    return path if path.is_absolute() else base_dir / path
+    if path.is_absolute():
+        return path
+    candidate = base_dir / path
+    if candidate.exists():
+        return candidate
+    parent_candidate = base_dir.parent / path
+    if parent_candidate.exists():
+        return parent_candidate
+    return candidate
+
+
+def _load_depth_tensor(depth_path: Path, resolution: tuple[int, int]) -> torch.Tensor:
+    depth = np.load(depth_path).astype(np.float32)
+    depth = np.squeeze(depth)
+    if depth.ndim != 2:
+        raise ValueError(f"Expected a 2D pseudo depth map at {depth_path}, got shape {depth.shape}")
+
+    width, height = resolution
+    tensor = torch.from_numpy(depth)[None, None, ...]
+    if tensor.shape[-2:] != (height, width):
+        tensor = F.interpolate(tensor, size=(height, width), mode="bilinear", align_corners=False)
+    return tensor.squeeze(0).cuda()
 
 
 def load_pseudo_cameras(opt, scene, train_cams):
@@ -143,6 +165,14 @@ def load_pseudo_cameras(opt, scene, train_cams):
         mask_image = Image.open(mask_path).convert("L")
         image_tensor = PILtoTorch(image, resolution)[:3, ...]
         mask_tensor = PILtoTorch(mask_image, resolution)[:1, ...].clamp(0.0, 1.0).cuda()
+        depth_tensor = None
+        if getattr(opt, "pseudo_depth_weight", 0.0) > 0.0:
+            depth_value = view.get("depth_path")
+            if not depth_value:
+                raise ValueError(
+                    f"Pseudo view {idx} is missing depth_path, but --pseudo_depth_weight is enabled."
+                )
+            depth_tensor = _load_depth_tensor(_resolve_relative_path(manifest_dir, depth_value), resolution)
 
         cam = Camera(
             colmap_id=100000 + idx,
@@ -159,6 +189,7 @@ def load_pseudo_cameras(opt, scene, train_cams):
         cam.is_pseudo = True
         cam.confidence_mask = mask_tensor
         cam.loss_weight = float(view.get("loss_weight", 1.0))
+        cam.pseudo_depth = depth_tensor
         cam.fixed_camera_pose = get_tensor_from_camera(cam.world_view_transform.transpose(0, 1)).detach()
         pseudo_cameras.append(cam)
 
@@ -167,7 +198,65 @@ def load_pseudo_cameras(opt, scene, train_cams):
     mask_mean = torch.stack([cam.confidence_mask.mean().detach().cpu() for cam in pseudo_cameras]).mean().item()
     print(f"Loaded pseudo cameras: {len(pseudo_cameras)} from {manifest_path}")
     print(f"Pseudo confidence mask mean: {mask_mean:.4f}")
+    if getattr(opt, "pseudo_depth_weight", 0.0) > 0.0:
+        depth_count = sum(1 for cam in pseudo_cameras if cam.pseudo_depth is not None)
+        print(f"Loaded pseudo depth maps: {depth_count}/{len(pseudo_cameras)}")
     return pseudo_cameras
+
+
+def pop_random_pseudo_camera(pseudo_cameras, pseudo_stack):
+    if not pseudo_stack:
+        pseudo_stack = pseudo_cameras.copy()
+    rand_idx = randint(0, len(pseudo_stack) - 1)
+    return pseudo_stack.pop(rand_idx), pseudo_stack
+
+
+def pseudo_supervision_loss(viewpoint_cam, gaussians, pipe, bg, opt, render_pkg=None):
+    need_pseudo_depth = (
+        getattr(opt, "pseudo_depth_weight", 0.0) > 0.0
+        and getattr(viewpoint_cam, "pseudo_depth", None) is not None
+    )
+    if render_pkg is None:
+        render_pkg = render(
+            viewpoint_cam,
+            gaussians,
+            pipe,
+            bg,
+            camera_pose=viewpoint_cam.fixed_camera_pose,
+            return_depth=need_pseudo_depth,
+        )
+    image = render_pkg["render"]
+    gt_image = viewpoint_cam.original_image.cuda()
+    mask_base = viewpoint_cam.confidence_mask.cuda().clamp(0.0, 1.0)
+    mask_gamma = max(float(getattr(opt, "pseudo_mask_gamma", 1.0)), 1e-6)
+    mask = torch.pow(mask_base, mask_gamma).expand_as(image)
+    rgb_l1 = (torch.abs(image - gt_image) * mask).sum() / (mask.sum() + 1e-6)
+    pseudo_loss = image.sum() * 0.0
+    if getattr(opt, "pseudo_rgb_weight", 1.0) > 0.0:
+        pseudo_loss = pseudo_loss + opt.pseudo_rgb_weight * rgb_l1
+    if getattr(opt, "pseudo_charbonnier_weight", 0.0) > 0.0:
+        charbonnier = torch.sqrt((image - gt_image).pow(2) + 1e-6)
+        charbonnier = (charbonnier * mask).sum() / (mask.sum() + 1e-6)
+        pseudo_loss = pseudo_loss + opt.pseudo_charbonnier_weight * charbonnier
+    if getattr(opt, "pseudo_ssim_weight", 0.0) > 0.0:
+        pseudo_ssim = 1.0 - ssim(image * mask, gt_image * mask)
+        pseudo_loss = pseudo_loss + opt.pseudo_ssim_weight * pseudo_ssim
+    if need_pseudo_depth:
+        pred_depth = render_pkg["depth"]
+        target_depth = viewpoint_cam.pseudo_depth.cuda()
+        depth_mask = mask_base
+        valid_depth = depth_mask * (target_depth > 0).float() * (pred_depth.detach() > 0).float()
+        if opt.pseudo_depth_loss == "relative_l1":
+            denom = (0.5 * (pred_depth.detach().abs() + target_depth.abs())).clamp_min(1e-3)
+            depth_residual = torch.abs(pred_depth - target_depth) / denom
+        elif opt.pseudo_depth_loss == "l1":
+            depth_residual = torch.abs(pred_depth - target_depth)
+        else:
+            raise ValueError(f"Unsupported pseudo_depth_loss: {opt.pseudo_depth_loss}")
+        depth_loss = (depth_residual * valid_depth).sum() / (valid_depth.sum() + 1e-6)
+        pseudo_loss = pseudo_loss + opt.pseudo_depth_weight * depth_loss
+
+    return opt.pseudo_loss_weight * viewpoint_cam.loss_weight * pseudo_loss, rgb_l1
 
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
@@ -254,17 +343,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
 
-        # Pick a random Camera. Pseudo views are fixed-pose, masked, low-weight supervision.
+        # Pick a random Camera.  By default pseudo views replace a real-view
+        # sample probabilistically; with --pseudo_pair_with_real, every
+        # iteration keeps a real-view loss and optionally adds a pseudo loss.
+        pair_pseudo_with_real = getattr(opt, "pseudo_pair_with_real", False)
         use_pseudo = (
-            len(pseudo_cameras) > 0
+            not pair_pseudo_with_real
+            and len(pseudo_cameras) > 0
             and iteration >= opt.pseudo_start_iter
             and random.random() < opt.pseudo_sample_ratio
         )
         if use_pseudo:
-            if not pseudo_stack:
-                pseudo_stack = pseudo_cameras.copy()
-            rand_idx = randint(0, len(pseudo_stack) - 1)
-            viewpoint_cam = pseudo_stack.pop(rand_idx)
+            viewpoint_cam, pseudo_stack = pop_random_pseudo_camera(pseudo_cameras, pseudo_stack)
             pose = viewpoint_cam.fixed_camera_pose
         else:
             if not viewpoint_stack:
@@ -281,15 +371,20 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, camera_pose=pose)
+        is_pseudo_view = getattr(viewpoint_cam, "is_pseudo", False)
+        need_pseudo_depth = (
+            is_pseudo_view
+            and getattr(opt, "pseudo_depth_weight", 0.0) > 0.0
+            and getattr(viewpoint_cam, "pseudo_depth", None) is not None
+        )
+
+        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, camera_pose=pose, return_depth=need_pseudo_depth)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
-        if getattr(viewpoint_cam, "is_pseudo", False):
-            mask = viewpoint_cam.confidence_mask.cuda().expand_as(image)
-            Ll1 = (torch.abs(image - gt_image) * mask).sum() / (mask.sum() + 1e-6)
-            loss = opt.pseudo_loss_weight * viewpoint_cam.loss_weight * Ll1
+        if is_pseudo_view:
+            loss, Ll1 = pseudo_supervision_loss(viewpoint_cam, gaussians, pipe, bg, opt, render_pkg=render_pkg)
         else:
             Ll1 = l1_loss(image, gt_image)
             if FUSED_SSIM_AVAILABLE:
@@ -297,6 +392,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             else:
                 ssim_value = ssim(image, gt_image)
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
+            add_pseudo = (
+                pair_pseudo_with_real
+                and len(pseudo_cameras) > 0
+                and iteration >= opt.pseudo_start_iter
+                and random.random() < opt.pseudo_sample_ratio
+            )
+            if add_pseudo:
+                pseudo_cam, pseudo_stack = pop_random_pseudo_camera(pseudo_cameras, pseudo_stack)
+                pseudo_loss, _ = pseudo_supervision_loss(pseudo_cam, gaussians, pipe, bg, opt)
+                loss = loss + pseudo_loss
         loss.backward()
         iter_end.record()
         # for param_group in gaussians.optimizer.param_groups:
@@ -337,12 +442,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
 
+            # Log train/test PSNR at requested checkpoints.  Previously this
+            # only ran at the final iteration, which made --test_iterations
+            # misleading for overfitting checks.
+            if iteration in testing_iterations or iteration % 5000 == 0:
+                training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
+
             # Log and save
             if iteration == opt.iterations:
                 end = time()
                 train_time_wo_log = end - start
                 save_time(scene.model_path, '[2] train_joint_TrainTime', train_time_wo_log)
-                training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
+                if iteration not in testing_iterations and iteration % 5000 != 0:
+                    training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
             
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))

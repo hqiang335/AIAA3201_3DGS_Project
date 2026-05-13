@@ -96,6 +96,27 @@ def main() -> None:
         help="Number of held-out test views (linspace between sorted frames 1..N-2). Default: 12.",
     )
     parser.add_argument("-i", "--iterations", type=int, default=1000)
+    parser.add_argument(
+        "--train_test_iterations",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Iterations where train.py should print train/test PSNR. Default: final iteration only.",
+    )
+    parser.add_argument(
+        "--train_save_iterations",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Iterations where train.py should save Gaussian checkpoints. Default: final iteration only.",
+    )
+    parser.add_argument(
+        "--render_iterations",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Saved iterations to render/evaluate after training. Default: final iteration only.",
+    )
     parser.add_argument("-r", "--resolution", type=int, default=1, help="Resolution scale for train/render (e.g. 1, 2, 4).")
     parser.add_argument(
         "--optim_test_pose_iter",
@@ -242,7 +263,24 @@ def main() -> None:
     parser.add_argument("--pseudo_start_iter", type=int, default=1000, help="First iteration that can sample pseudo views.")
     parser.add_argument("--pseudo_loss_weight", type=float, default=0.1, help="Global pseudo-view loss multiplier.")
     parser.add_argument("--pseudo_sample_ratio", type=float, default=0.25, help="Probability of sampling a pseudo view per iteration.")
+    parser.add_argument(
+        "--pseudo_pair_with_real",
+        action="store_true",
+        help="Train a real view every iteration and add an extra pseudo-view loss with --pseudo_sample_ratio probability.",
+    )
     parser.add_argument("--pseudo_use_densification", action="store_true", help="Allow pseudo views to update densification stats.")
+    parser.add_argument("--pseudo_rgb_weight", type=float, default=1.0, help="RGB term weight inside pseudo-view loss.")
+    parser.add_argument("--pseudo_ssim_weight", type=float, default=0.0, help="Masked SSIM term weight inside pseudo-view loss.")
+    parser.add_argument("--pseudo_charbonnier_weight", type=float, default=0.0, help="Masked Charbonnier RGB term weight inside pseudo-view loss.")
+    parser.add_argument("--pseudo_mask_gamma", type=float, default=1.0, help="Exponent applied to pseudo confidence masks before loss weighting.")
+    parser.add_argument("--pseudo_depth_weight", type=float, default=0.0, help="Depth term weight inside pseudo-view loss. 0 disables depth supervision.")
+    parser.add_argument(
+        "--pseudo_depth_loss",
+        type=str,
+        default="relative_l1",
+        choices=["relative_l1", "l1"],
+        help="Depth loss used for pseudo-view RGB-D supervision.",
+    )
 
     args = parser.parse_args()
     source = args.source_path.resolve()
@@ -251,6 +289,9 @@ def main() -> None:
 
     nv_train_only = ["--n_views", str(args.n_train)]
     nv_init = nv_train_only + ["--n_test", str(args.n_test)]
+    train_test_iterations = args.train_test_iterations or [args.iterations]
+    train_save_iterations = args.train_save_iterations or [args.iterations]
+    render_iterations = args.render_iterations or [args.iterations]
 
     log_file.parent.mkdir(parents=True, exist_ok=True)
     with open(log_file, "a", encoding="utf-8") as f:
@@ -301,7 +342,9 @@ def main() -> None:
             "--iterations",
             str(args.iterations),
             "--test_iterations",
-            str(args.iterations),
+            *[str(v) for v in train_test_iterations],
+            "--save_iterations",
+            *[str(v) for v in train_save_iterations],
         ]
         if not args.no_pp_optimizer:
             train_cmd.append("--pp_optimizer")
@@ -321,8 +364,22 @@ def main() -> None:
                     str(args.pseudo_loss_weight),
                     "--pseudo_sample_ratio",
                     str(args.pseudo_sample_ratio),
+                    "--pseudo_rgb_weight",
+                    str(args.pseudo_rgb_weight),
+                    "--pseudo_ssim_weight",
+                    str(args.pseudo_ssim_weight),
+                    "--pseudo_charbonnier_weight",
+                    str(args.pseudo_charbonnier_weight),
+                    "--pseudo_mask_gamma",
+                    str(args.pseudo_mask_gamma),
+                    "--pseudo_depth_weight",
+                    str(args.pseudo_depth_weight),
+                    "--pseudo_depth_loss",
+                    args.pseudo_depth_loss,
                 ]
             )
+            if args.pseudo_pair_with_real:
+                train_cmd.append("--pseudo_pair_with_real")
             if args.pseudo_use_densification:
                 train_cmd.append("--pseudo_use_densification")
         train_cmd.extend(
@@ -375,21 +432,26 @@ def main() -> None:
         "-r",
         str(args.resolution),
         *nv_train_only,
-        "--iterations",
-        str(args.iterations),
     ]
 
-    if not args.skip_render_train:
-        _run(root / "render.py", base_render, root, log_file)
-
-    if not args.skip_render_eval:
-        eval_render = [
+    for render_iteration in render_iterations:
+        render_args = [
             *base_render,
-            "--eval",
-            "--optim_test_pose_iter",
-            str(args.optim_test_pose_iter),
+            "--iterations",
+            str(render_iteration),
         ]
-        _run(root / "render.py", eval_render, root, log_file)
+
+        if not args.skip_render_train:
+            _run(root / "render.py", render_args, root, log_file)
+
+        if not args.skip_render_eval:
+            eval_render = [
+                *render_args,
+                "--eval",
+                "--optim_test_pose_iter",
+                str(args.optim_test_pose_iter),
+            ]
+            _run(root / "render.py", eval_render, root, log_file)
 
     if not args.skip_metrics:
         metrics_cmd = [

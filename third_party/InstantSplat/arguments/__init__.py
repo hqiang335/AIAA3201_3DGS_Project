@@ -102,7 +102,14 @@ class OptimizationParams(ParamGroup):
         self.pseudo_start_iter = 1000
         self.pseudo_loss_weight = 0.1
         self.pseudo_sample_ratio = 0.25
+        self.pseudo_pair_with_real = False
         self.pseudo_use_densification = False
+        self.pseudo_rgb_weight = 1.0
+        self.pseudo_ssim_weight = 0.0
+        self.pseudo_charbonnier_weight = 0.0
+        self.pseudo_mask_gamma = 1.0
+        self.pseudo_depth_weight = 0.0
+        self.pseudo_depth_loss = "relative_l1"
         super().__init__(parser, "Optimization Parameters")
 
 def default_train_learning_rates() -> dict[str, float]:
