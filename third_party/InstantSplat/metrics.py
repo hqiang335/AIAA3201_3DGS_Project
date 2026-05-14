@@ -32,6 +32,40 @@ from utils.utils_poses.vis_pose_utils import plot_pose
 from utils.sfm_utils import split_train_test, readImages, align_pose, read_colmap_gt_pose
 
 
+def _load_explicit_pose_eval(split_manifest, source_path, pose_optimized):
+    with open(split_manifest, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    real_images_dir = manifest.get("real_images_dir")
+    if real_images_dir:
+        gt_pose_root = str(Path(real_images_dir).parent)
+    else:
+        gt_pose_root = source_path
+
+    pose_colmap = read_colmap_gt_pose(gt_pose_root)
+    real_pose_indices = []
+    real_gt_poses = []
+
+    for pose_idx, entry in enumerate(manifest.get("train", [])):
+        if entry.get("kind") != "real":
+            continue
+        if "time" not in entry:
+            continue
+        gt_idx = int(round(float(entry["time"])))
+        if gt_idx < 0 or gt_idx >= len(pose_colmap):
+            continue
+        real_pose_indices.append(pose_idx)
+        real_gt_poses.append(pose_colmap[gt_idx])
+
+    if not real_pose_indices:
+        raise ValueError(f"No real train entries with valid GT times found in {split_manifest}")
+
+    pose_est = pose_optimized[np.asarray(real_pose_indices, dtype=np.int64)]
+    poses_gt = np.asarray(real_gt_poses)
+    print(f"  Pose eval: using {len(real_pose_indices)} real train poses from explicit split; pseudo poses are skipped.")
+    return poses_gt, pose_est
+
+
 def evaluate(args):
 
     full_dict = {}
@@ -88,8 +122,15 @@ def evaluate(args):
                 pose_dir = Path(scene_dir) / "pose"
                 pose_path = pose_dir / method
                 pose_optimized = np.load(pose_path / f'pose_optimized.npy')
-                pose_colmap = read_colmap_gt_pose(args.source_path)
-                gt_train_pose, _ = split_train_test(pose_colmap, llffhold=8, n_views=args.n_views, n_test=args.n_test, verbose=False)
+                if args.split_manifest:
+                    gt_train_pose, pose_optimized = _load_explicit_pose_eval(
+                        args.split_manifest,
+                        args.source_path,
+                        pose_optimized,
+                    )
+                else:
+                    pose_colmap = read_colmap_gt_pose(args.source_path)
+                    gt_train_pose, _ = split_train_test(pose_colmap, llffhold=8, n_views=args.n_views, n_test=args.n_test, verbose=False)
 
                 # start to align
                 pose_optimized = torch.from_numpy(pose_optimized)
@@ -136,5 +177,6 @@ if __name__ == "__main__":
     parser.add_argument('--model_paths', '-m', required=True, nargs="+", type=str, default=[])
     parser.add_argument("--n_views", default=None, type=int)
     parser.add_argument("--n_test", default=12, type=int, help="Must match init_geo / manifest test count")
+    parser.add_argument("--split_manifest", default=None, type=str, help="Explicit split manifest; pose metrics use only real train entries.")
     args = parser.parse_args()
     evaluate(args)

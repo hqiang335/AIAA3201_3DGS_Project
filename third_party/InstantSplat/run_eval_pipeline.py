@@ -95,6 +95,12 @@ def main() -> None:
         default=12,
         help="Number of held-out test views (linspace between sorted frames 1..N-2). Default: 12.",
     )
+    parser.add_argument(
+        "--split_manifest",
+        type=Path,
+        default=None,
+        help="Explicit train/test split manifest for init_geo.py. Images are ordered by manifest time.",
+    )
     parser.add_argument("-i", "--iterations", type=int, default=1000)
     parser.add_argument(
         "--train_test_iterations",
@@ -327,6 +333,8 @@ def main() -> None:
             "--sampling_seed",
             str(args.sampling_seed),
         ]
+        if args.split_manifest is not None:
+            init_args.extend(["--split_manifest", str(args.split_manifest.resolve())])
         _run(root / "init_geo.py", init_args[1:], root, log_file)
 
     if not args.skip_train:
@@ -465,6 +473,8 @@ def main() -> None:
             "--n_test",
             str(args.n_test),
         ]
+        if args.split_manifest is not None:
+            metrics_cmd.extend(["--split_manifest", str(args.split_manifest.resolve())])
         _run(root / "metrics.py", metrics_cmd[1:], root, log_file)
 
     print("\nPipeline finished.", flush=True)
