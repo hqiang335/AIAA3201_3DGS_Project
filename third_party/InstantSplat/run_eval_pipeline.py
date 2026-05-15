@@ -267,6 +267,7 @@ def main() -> None:
     parser.add_argument("--use_pseudo_views", action="store_true", help="Forward pseudo-view supervision options to train.py.")
     parser.add_argument("--pseudo_manifest", type=str, default="", help="Pseudo-view train manifest path.")
     parser.add_argument("--pseudo_start_iter", type=int, default=1000, help="First iteration that can sample pseudo views.")
+    parser.add_argument("--pseudo_ramp_until", type=int, default=1000, help="Iteration where pseudo-view loss reaches full weight.")
     parser.add_argument("--pseudo_loss_weight", type=float, default=0.1, help="Global pseudo-view loss multiplier.")
     parser.add_argument("--pseudo_sample_ratio", type=float, default=0.25, help="Probability of sampling a pseudo view per iteration.")
     parser.add_argument(
@@ -277,8 +278,11 @@ def main() -> None:
     parser.add_argument("--pseudo_use_densification", action="store_true", help="Allow pseudo views to update densification stats.")
     parser.add_argument("--pseudo_rgb_weight", type=float, default=1.0, help="RGB term weight inside pseudo-view loss.")
     parser.add_argument("--pseudo_ssim_weight", type=float, default=0.0, help="Masked SSIM term weight inside pseudo-view loss.")
+    parser.add_argument("--pseudo_lpips_weight", type=float, default=0.0, help="Masked LPIPS term weight inside pseudo-view loss.")
+    parser.add_argument("--pseudo_lpips_net", type=str, default="vgg", choices=["alex", "squeeze", "vgg"], help="LPIPS backbone for pseudo-view loss.")
     parser.add_argument("--pseudo_charbonnier_weight", type=float, default=0.0, help="Masked Charbonnier RGB term weight inside pseudo-view loss.")
-    parser.add_argument("--pseudo_mask_gamma", type=float, default=1.0, help="Exponent applied to pseudo confidence masks before loss weighting.")
+    parser.add_argument("--pseudo_mask_gamma", type=float, default=0.5, help="Exponent applied to pseudo confidence masks before loss weighting.")
+    parser.add_argument("--pseudo_confidence_floor", type=float, default=0.25, help="Minimum confidence value for pseudo masks after loading.")
     parser.add_argument("--pseudo_depth_weight", type=float, default=0.0, help="Depth term weight inside pseudo-view loss. 0 disables depth supervision.")
     parser.add_argument(
         "--pseudo_depth_loss",
@@ -366,30 +370,42 @@ def main() -> None:
                     "--use_pseudo_views",
                     "--pseudo_manifest",
                     args.pseudo_manifest,
-                    "--pseudo_start_iter",
-                    str(args.pseudo_start_iter),
-                    "--pseudo_loss_weight",
-                    str(args.pseudo_loss_weight),
-                    "--pseudo_sample_ratio",
-                    str(args.pseudo_sample_ratio),
-                    "--pseudo_rgb_weight",
-                    str(args.pseudo_rgb_weight),
-                    "--pseudo_ssim_weight",
-                    str(args.pseudo_ssim_weight),
-                    "--pseudo_charbonnier_weight",
-                    str(args.pseudo_charbonnier_weight),
-                    "--pseudo_mask_gamma",
-                    str(args.pseudo_mask_gamma),
-                    "--pseudo_depth_weight",
-                    str(args.pseudo_depth_weight),
-                    "--pseudo_depth_loss",
-                    args.pseudo_depth_loss,
                 ]
             )
-            if args.pseudo_pair_with_real:
-                train_cmd.append("--pseudo_pair_with_real")
-            if args.pseudo_use_densification:
-                train_cmd.append("--pseudo_use_densification")
+        train_cmd.extend(
+            [
+                "--pseudo_start_iter",
+                str(args.pseudo_start_iter),
+                "--pseudo_ramp_until",
+                str(args.pseudo_ramp_until),
+                "--pseudo_loss_weight",
+                str(args.pseudo_loss_weight),
+                "--pseudo_sample_ratio",
+                str(args.pseudo_sample_ratio),
+                "--pseudo_rgb_weight",
+                str(args.pseudo_rgb_weight),
+                "--pseudo_ssim_weight",
+                str(args.pseudo_ssim_weight),
+                "--pseudo_lpips_weight",
+                str(args.pseudo_lpips_weight),
+                "--pseudo_lpips_net",
+                args.pseudo_lpips_net,
+                "--pseudo_charbonnier_weight",
+                str(args.pseudo_charbonnier_weight),
+                "--pseudo_mask_gamma",
+                str(args.pseudo_mask_gamma),
+                "--pseudo_confidence_floor",
+                str(args.pseudo_confidence_floor),
+                "--pseudo_depth_weight",
+                str(args.pseudo_depth_weight),
+                "--pseudo_depth_loss",
+                args.pseudo_depth_loss,
+            ]
+        )
+        if args.pseudo_pair_with_real:
+            train_cmd.append("--pseudo_pair_with_real")
+        if args.pseudo_use_densification:
+            train_cmd.append("--pseudo_use_densification")
         train_cmd.extend(
             [
                 "--position_lr_init",

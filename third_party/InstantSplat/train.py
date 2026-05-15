@@ -37,6 +37,7 @@ from utils.image_utils import psnr
 from utils.loss_utils import l1_loss, ssim
 from utils.pose_utils import get_camera_from_tensor, get_tensor_from_camera
 from utils.sfm_utils import save_time
+from lpipsPyTorch.modules.lpips import LPIPS
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -47,6 +48,19 @@ try:
     FUSED_SSIM_AVAILABLE = True
 except:
     FUSED_SSIM_AVAILABLE = False
+
+_PSEUDO_LPIPS_MODELS = {}
+
+
+def get_pseudo_lpips_model(device, net_type="vgg"):
+    key = (str(device), net_type)
+    model = _PSEUDO_LPIPS_MODELS.get(key)
+    if model is None:
+        model = LPIPS(net_type=net_type).to(device).eval()
+        for param in model.parameters():
+            param.requires_grad_(False)
+        _PSEUDO_LPIPS_MODELS[key] = model
+    return model
 
 
 def save_pose(path, quat_pose, train_cams, llffhold=2):
@@ -148,11 +162,8 @@ def load_pseudo_cameras(opt, scene, train_cams):
 
     pseudo_cameras = []
     for idx, view in enumerate(manifest.get("views", [])):
-        if "image_path" not in view or "mask_path" not in view:
-            raise ValueError(
-                f"Pseudo view {idx} is missing image_path/mask_path. "
-                "Run tools/build_pseudo_masks.py first."
-            )
+        if "image_path" not in view:
+            raise ValueError(f"Pseudo view {idx} is missing image_path.")
         pose = poses[int(view["pose_index"])]
         if pose.shape == (3, 4):
             pose_4x4 = np.eye(4, dtype=np.float32)
@@ -160,11 +171,15 @@ def load_pseudo_cameras(opt, scene, train_cams):
             pose = pose_4x4
 
         image_path = _resolve_relative_path(manifest_dir, view["image_path"])
-        mask_path = _resolve_relative_path(manifest_dir, view["mask_path"])
         image = Image.open(image_path).convert("RGB")
-        mask_image = Image.open(mask_path).convert("L")
         image_tensor = PILtoTorch(image, resolution)[:3, ...]
-        mask_tensor = PILtoTorch(mask_image, resolution)[:1, ...].clamp(0.0, 1.0).cuda()
+        mask_value = view.get("mask_path") or view.get("feature_mask_path")
+        if mask_value:
+            mask_path = _resolve_relative_path(manifest_dir, mask_value)
+            mask_image = Image.open(mask_path).convert("L")
+            mask_tensor = PILtoTorch(mask_image, resolution)[:1, ...].clamp(0.0, 1.0).cuda()
+        else:
+            mask_tensor = torch.ones((1, resolution[1], resolution[0]), device="cuda")
         depth_tensor = None
         if getattr(opt, "pseudo_depth_weight", 0.0) > 0.0:
             depth_value = view.get("depth_path")
@@ -211,7 +226,16 @@ def pop_random_pseudo_camera(pseudo_cameras, pseudo_stack):
     return pseudo_stack.pop(rand_idx), pseudo_stack
 
 
-def pseudo_supervision_loss(viewpoint_cam, gaussians, pipe, bg, opt, render_pkg=None):
+def pseudo_loss_ramp(opt, iteration):
+    if iteration < opt.pseudo_start_iter:
+        return 0.0
+    ramp_until = max(int(getattr(opt, "pseudo_ramp_until", opt.pseudo_start_iter)), opt.pseudo_start_iter)
+    if ramp_until <= opt.pseudo_start_iter:
+        return 1.0
+    return min(1.0, max(0.0, (iteration - opt.pseudo_start_iter) / float(ramp_until - opt.pseudo_start_iter)))
+
+
+def pseudo_supervision_loss(viewpoint_cam, gaussians, pipe, bg, opt, render_pkg=None, iteration=None):
     need_pseudo_depth = (
         getattr(opt, "pseudo_depth_weight", 0.0) > 0.0
         and getattr(viewpoint_cam, "pseudo_depth", None) is not None
@@ -228,6 +252,10 @@ def pseudo_supervision_loss(viewpoint_cam, gaussians, pipe, bg, opt, render_pkg=
     image = render_pkg["render"]
     gt_image = viewpoint_cam.original_image.cuda()
     mask_base = viewpoint_cam.confidence_mask.cuda().clamp(0.0, 1.0)
+    confidence_floor = float(getattr(opt, "pseudo_confidence_floor", 0.0))
+    if confidence_floor > 0.0:
+        confidence_floor = min(max(confidence_floor, 0.0), 1.0)
+        mask_base = confidence_floor + (1.0 - confidence_floor) * mask_base
     mask_gamma = max(float(getattr(opt, "pseudo_mask_gamma", 1.0)), 1e-6)
     mask = torch.pow(mask_base, mask_gamma).expand_as(image)
     rgb_l1 = (torch.abs(image - gt_image) * mask).sum() / (mask.sum() + 1e-6)
@@ -241,6 +269,10 @@ def pseudo_supervision_loss(viewpoint_cam, gaussians, pipe, bg, opt, render_pkg=
     if getattr(opt, "pseudo_ssim_weight", 0.0) > 0.0:
         pseudo_ssim = 1.0 - ssim(image * mask, gt_image * mask)
         pseudo_loss = pseudo_loss + opt.pseudo_ssim_weight * pseudo_ssim
+    if getattr(opt, "pseudo_lpips_weight", 0.0) > 0.0:
+        lpips_model = get_pseudo_lpips_model(image.device, getattr(opt, "pseudo_lpips_net", "vgg"))
+        pseudo_lpips = lpips_model((image * mask).unsqueeze(0), (gt_image * mask).unsqueeze(0)).mean()
+        pseudo_loss = pseudo_loss + opt.pseudo_lpips_weight * pseudo_lpips
     if need_pseudo_depth:
         pred_depth = render_pkg["depth"]
         target_depth = viewpoint_cam.pseudo_depth.cuda()
@@ -256,7 +288,8 @@ def pseudo_supervision_loss(viewpoint_cam, gaussians, pipe, bg, opt, render_pkg=
         depth_loss = (depth_residual * valid_depth).sum() / (valid_depth.sum() + 1e-6)
         pseudo_loss = pseudo_loss + opt.pseudo_depth_weight * depth_loss
 
-    return opt.pseudo_loss_weight * viewpoint_cam.loss_weight * pseudo_loss, rgb_l1
+    ramp = pseudo_loss_ramp(opt, iteration) if iteration is not None else 1.0
+    return opt.pseudo_loss_weight * ramp * viewpoint_cam.loss_weight * pseudo_loss, rgb_l1
 
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
@@ -289,7 +322,20 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gaussians.restore(model_params, opt)
 
     train_cams_init = scene.getTrainCameras().copy()
-    pseudo_cameras = load_pseudo_cameras(opt, scene, train_cams_init)
+    inline_pseudo_cameras = [cam for cam in train_cams_init if getattr(cam, "is_pseudo", False)]
+    real_train_cameras = [cam for cam in train_cams_init if not getattr(cam, "is_pseudo", False)]
+    for cam in inline_pseudo_cameras:
+        if not hasattr(cam, "fixed_camera_pose"):
+            cam.fixed_camera_pose = get_tensor_from_camera(cam.world_view_transform.transpose(0, 1)).detach()
+    if inline_pseudo_cameras:
+        print(
+            f"Using inline pseudo cameras from explicit split: "
+            f"{len(inline_pseudo_cameras)} pseudo, {len(real_train_cameras)} real"
+        )
+    external_pseudo_cameras = load_pseudo_cameras(opt, scene, train_cams_init)
+    pseudo_cameras = inline_pseudo_cameras + external_pseudo_cameras
+    if not real_train_cameras:
+        real_train_cameras = train_cams_init
     for save_iter in saving_iterations:
         os.makedirs(scene.model_path + f'/pose/ours_{save_iter}', exist_ok=True)
         save_pose(scene.model_path + f'/pose/ours_{save_iter}/pose_org.npy', gaussians.P, train_cams_init)
@@ -299,7 +345,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
 
-    viewpoint_stack = scene.getTrainCameras().copy()
+    viewpoint_stack = real_train_cameras.copy()
     viewpoint_indices = list(range(len(viewpoint_stack)))
     pseudo_stack = pseudo_cameras.copy()
     ema_loss_for_log = 0.0
@@ -355,10 +401,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         )
         if use_pseudo:
             viewpoint_cam, pseudo_stack = pop_random_pseudo_camera(pseudo_cameras, pseudo_stack)
-            pose = viewpoint_cam.fixed_camera_pose
+            pose = getattr(viewpoint_cam, "fixed_camera_pose", None)
+            if pose is None:
+                pose = gaussians.get_RT(viewpoint_cam.uid)
         else:
             if not viewpoint_stack:
-                viewpoint_stack = scene.getTrainCameras().copy()
+                viewpoint_stack = real_train_cameras.copy()
                 viewpoint_indices = list(range(len(viewpoint_stack)))
             rand_idx = randint(0, len(viewpoint_indices) - 1)
             viewpoint_cam = viewpoint_stack.pop(rand_idx)
@@ -384,7 +432,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         if is_pseudo_view:
-            loss, Ll1 = pseudo_supervision_loss(viewpoint_cam, gaussians, pipe, bg, opt, render_pkg=render_pkg)
+            loss, Ll1 = pseudo_supervision_loss(viewpoint_cam, gaussians, pipe, bg, opt, render_pkg=render_pkg, iteration=iteration)
         else:
             Ll1 = l1_loss(image, gt_image)
             if FUSED_SSIM_AVAILABLE:
@@ -400,7 +448,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             )
             if add_pseudo:
                 pseudo_cam, pseudo_stack = pop_random_pseudo_camera(pseudo_cameras, pseudo_stack)
-                pseudo_loss, _ = pseudo_supervision_loss(pseudo_cam, gaussians, pipe, bg, opt)
+                pseudo_loss, _ = pseudo_supervision_loss(pseudo_cam, gaussians, pipe, bg, opt, iteration=iteration)
                 loss = loss + pseudo_loss
         loss.backward()
         iter_end.record()

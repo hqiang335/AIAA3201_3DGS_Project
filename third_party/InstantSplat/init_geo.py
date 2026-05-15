@@ -55,8 +55,17 @@ def load_explicit_split_manifest(split_manifest, image_dir, n_views, n_test):
     with open(manifest_path, "r", encoding="utf-8") as f:
         manifest = json.load(f)
 
-    train_entries = manifest.get("train") or manifest.get("train_views")
-    test_entries = manifest.get("test") or manifest.get("test_views") or []
+    train_entries = (
+        manifest.get("train")
+        or manifest.get("train_views")
+        or manifest.get("train_items")
+    )
+    test_entries = (
+        manifest.get("test")
+        or manifest.get("test_views")
+        or manifest.get("test_items")
+        or []
+    )
     if not train_entries:
         raise ValueError(f"{manifest_path} does not contain a non-empty train list")
 
