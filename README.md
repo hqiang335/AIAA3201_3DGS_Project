@@ -4,7 +4,7 @@ This is the public code repository for our AIAA3201 computer-vision course proje
 
 **Core idea.** Sparse real views are used to estimate camera poses and initialize the Gaussian scene. Generated pseudo views are used only as confidence-weighted photometric supervision; they do **not** initialize geometry and they do **not** trigger densification in the final setting.
 
-![Final system overview](docs/assets/final_system_overview.jpg)
+![Final system overview](docs/assets/final_system_overview.png)
 
 ## What Is Included
 
