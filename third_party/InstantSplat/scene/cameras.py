@@ -28,6 +28,9 @@ class Camera(nn.Module):
         self.FoVx = FoVx
         self.FoVy = FoVy
         self.image_name = image_name
+        self.is_pseudo = False
+        self.confidence_mask = None
+        self.loss_weight = 1.0
 
         try:
             self.data_device = torch.device(data_device)
@@ -68,4 +71,3 @@ class MiniCam:
         self.full_proj_transform = full_proj_transform
         view_inv = torch.inverse(self.world_view_transform)
         self.camera_center = view_inv[3][:3]
-

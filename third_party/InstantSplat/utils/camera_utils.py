@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -11,10 +11,12 @@
 
 from scene.cameras import Camera
 import numpy as np
+import torch
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import fov2focal
 import scipy
 import matplotlib.pyplot as plt
+from PIL import Image
 
 WARNED = False
 
@@ -48,10 +50,20 @@ def loadCam(args, id, cam_info, resolution_scale):
     if resized_image_rgb.shape[1] == 4:
         loaded_mask = resized_image_rgb[3:4, ...]
 
-    return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
-                  FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
-                  image=gt_image, gt_alpha_mask=loaded_mask,
-                  image_name=cam_info.image_name, uid=id, data_device=args.data_device)
+    camera = Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T,
+                    FoVx=cam_info.FovX, FoVy=cam_info.FovY,
+                    image=gt_image, gt_alpha_mask=loaded_mask,
+                    image_name=cam_info.image_name, uid=id, data_device=args.data_device)
+    if getattr(cam_info, "is_pseudo", False):
+        camera.is_pseudo = True
+        camera.loss_weight = float(getattr(cam_info, "loss_weight", 1.0))
+        mask_path = getattr(cam_info, "confidence_mask_path", "")
+        if mask_path:
+            mask_image = Image.open(mask_path).convert("L")
+            camera.confidence_mask = PILtoTorch(mask_image, resolution)[:1, ...].clamp(0.0, 1.0).to(camera.data_device)
+        else:
+            camera.confidence_mask = torch.ones((1, resolution[1], resolution[0]), device=camera.data_device)
+    return camera
 
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args):
@@ -162,7 +174,7 @@ def generate_interpolated_path(poses, n_interp, spline_degree=5,
         new_points = np.array(scipy.interpolate.splev(u, tck))
         new_points = np.reshape(new_points.T, (n, sh[1], sh[2]))
         return new_points
-    
+
     ###  Additional operation
     # inter_poses = []
     # for pose in poses:
@@ -179,7 +191,7 @@ def generate_interpolated_path(poses, n_interp, spline_degree=5,
                         n_interp * (points.shape[0] - 1),
                         k=spline_degree,
                         s=smoothness)
-    return points_to_poses(new_points) 
+    return points_to_poses(new_points)
 
 
 def viewmatrix(lookdir, up, position):

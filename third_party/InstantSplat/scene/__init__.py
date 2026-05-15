@@ -84,14 +84,20 @@ class Scene:
                                                            "iteration_" + str(self.loaded_iter),
                                                            "point_cloud.ply"))
         else:
-            scale_gaussian = None
-            if args.init_scale_from_view_depth:
-                scale_gaussian = compute_scale_gaussian_by_project_pair_pcd(
-                    scene_info.point_cloud.points,
-                    np.linalg.inv(scene_info.train_poses),
-                    [[fov2focal(i.FovX, i.width), fov2focal(i.FovY, i.height)] for i in scene_info.train_cameras],
-                )
-            self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent, scale_gaussian)
+            initial_gaussians_path = getattr(args, "initial_gaussians_path", "")
+            if initial_gaussians_path:
+                print("Loading initial Gaussians from {}".format(initial_gaussians_path))
+                self.gaussians.load_ply(initial_gaussians_path)
+                self.gaussians.spatial_lr_scale = self.cameras_extent
+            else:
+                scale_gaussian = None
+                if args.init_scale_from_view_depth:
+                    scale_gaussian = compute_scale_gaussian_by_project_pair_pcd(
+                        scene_info.point_cloud.points,
+                        np.linalg.inv(scene_info.train_poses),
+                        [[fov2focal(i.FovX, i.width), fov2focal(i.FovY, i.height)] for i in scene_info.train_cameras],
+                    )
+                self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent, scale_gaussian)
             self.gaussians.init_RT_seq(self.train_cameras)
             # self.gaussians.init_exposure_seq(self.train_cameras)
 

@@ -28,6 +28,8 @@ def render(
     scaling_modifier=1.0,
     override_color=None,
     camera_pose=None,
+    return_alpha=False,
+    return_depth=False,
 ):
     """
     Render the scene.
@@ -134,11 +136,75 @@ def render(
         cov3D_precomp=cov3D_precomp,
     )
 
-    # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
-    # They will be excluded from value updates used in the splitting criteria.
-    return {
+    outputs = {
         "render": rendered_image,
         "viewspace_points": screenspace_points,
         "visibility_filter": radii > 0,
         "radii": radii,
     }
+
+    if return_alpha or return_depth:
+        aux_settings = GaussianRasterizationSettings(
+            image_height=int(viewpoint_camera.image_height),
+            image_width=int(viewpoint_camera.image_width),
+            tanfovx=tanfovx,
+            tanfovy=tanfovy,
+            bg=torch.zeros_like(bg_color),
+            scale_modifier=scaling_modifier,
+            viewmatrix=w2c,
+            projmatrix=projmatrix,
+            sh_degree=pc.active_sh_degree,
+            campos=camera_pos,
+            prefiltered=False,
+            debug=pipe.debug,
+        )
+        aux_rasterizer = GaussianRasterizer(raster_settings=aux_settings)
+
+        if return_alpha:
+            alpha_color = torch.ones((means3D.shape[0], 3), dtype=means3D.dtype, device=means3D.device)
+            alpha_image, _ = aux_rasterizer(
+                means3D=means3D,
+                means2D=means2D,
+                shs=None,
+                colors_precomp=alpha_color,
+                opacities=opacity,
+                scales=scales,
+                rotations=rotations,
+                cov3D_precomp=cov3D_precomp,
+            )
+            outputs["alpha"] = alpha_image[:1].clamp(0.0, 1.0)
+
+        if return_depth:
+            depth_values = means3D[:, 2:3].clamp_min(0.0)
+            depth_color = depth_values.repeat(1, 3)
+            depth_accum, _ = aux_rasterizer(
+                means3D=means3D,
+                means2D=means2D,
+                shs=None,
+                colors_precomp=depth_color,
+                opacities=opacity,
+                scales=scales,
+                rotations=rotations,
+                cov3D_precomp=cov3D_precomp,
+            )
+            if "alpha" in outputs:
+                alpha = outputs["alpha"]
+            else:
+                alpha_color = torch.ones((means3D.shape[0], 3), dtype=means3D.dtype, device=means3D.device)
+                alpha_image, _ = aux_rasterizer(
+                    means3D=means3D,
+                    means2D=means2D,
+                    shs=None,
+                    colors_precomp=alpha_color,
+                    opacities=opacity,
+                    scales=scales,
+                    rotations=rotations,
+                    cov3D_precomp=cov3D_precomp,
+                )
+                alpha = alpha_image[:1].clamp(0.0, 1.0)
+                outputs["alpha"] = alpha
+            outputs["depth"] = (depth_accum[:1] / alpha.clamp_min(1e-6)).masked_fill(alpha <= 1e-4, 0.0)
+
+    # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
+    # They will be excluded from value updates used in the splitting criteria.
+    return outputs

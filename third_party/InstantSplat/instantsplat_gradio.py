@@ -135,8 +135,8 @@ def process_scene(input_dir, output_dir, n_views, iterations, progress=gr.Progre
 
         "--position_lr_init", "0.000016",
         "--position_lr_final", "0.00000016",
-        "--feature_lr", "0.00025",
-        "--scaling_lr", "0.0005",
+        # "--feature_lr", "0.00025",
+        # "--scaling_lr", "0.0005",
         "--rotation_lr", "0.0001",
         
         "--pp_optimizer",

@@ -36,6 +36,9 @@ class CameraInfo(NamedTuple):
     image_name: str
     width: int
     height: int
+    is_pseudo: bool = False
+    confidence_mask_path: str = ""
+    loss_weight: float = 1.0
 
 
 class SceneInfo(NamedTuple):
@@ -156,6 +159,117 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         cam_infos.append(cam_info)
     sys.stdout.write('\n')
     return cam_infos, poses
+
+
+def _resolve_explicit_split_mask(mask_path, model_split_manifest, source_path):
+    if not mask_path:
+        return ""
+    mask_path = Path(mask_path)
+    if mask_path.is_absolute():
+        return str(mask_path)
+
+    pseudo_manifest = model_split_manifest.get("pseudo_manifest")
+    if pseudo_manifest:
+        candidate = Path(pseudo_manifest).parent / mask_path
+        if candidate.exists():
+            return str(candidate)
+
+    split_source = model_split_manifest.get("split_source_manifest")
+    if split_source:
+        split_source = Path(split_source)
+        if split_source.exists():
+            try:
+                with open(split_source, "r", encoding="utf-8") as f:
+                    explicit_split = json.load(f)
+                pseudo_manifest = explicit_split.get("pseudo_manifest")
+                if pseudo_manifest:
+                    candidate = Path(pseudo_manifest).parent / mask_path
+                    if candidate.exists():
+                        return str(candidate)
+            except Exception as exc:
+                print(f"[WARN] Could not resolve pseudo mask through {split_source}: {exc}")
+
+    for base in (Path(source_path), Path(model_split_manifest.get("split_source_manifest", "")).parent):
+        if str(base) == ".":
+            continue
+        candidate = base / mask_path
+        if candidate.exists():
+            return str(candidate)
+    return str(mask_path)
+
+
+def attach_explicit_split_pseudo_metadata(source_path, model_path, cam_infos):
+    """Mark explicit-split pseudo cameras so training can use masked pseudo loss.
+
+    ``init_geo.py`` writes ``<model_path>/split_manifest.json`` with the
+    original explicit split entry under ``source_entry``.  For pseudo-as-real
+    experiments this is the only place where the pseudo mask path survives after
+    the images have been renamed into the temporary source directory.
+    """
+    split_path = Path(model_path) / "split_manifest.json"
+    source_split_path = Path(source_path) / "explicit_split_manifest.json"
+    split_manifest = None
+    train_items = None
+
+    if split_path.exists():
+        try:
+            with open(split_path, "r", encoding="utf-8") as f:
+                split_manifest = json.load(f)
+            if split_manifest.get("split_mode") == "explicit_manifest":
+                train_items = split_manifest.get("train_items", [])
+        except Exception as exc:
+            print(f"[WARN] Could not read split manifest {split_path}: {exc}")
+
+    if train_items is None and source_split_path.exists():
+        try:
+            with open(source_split_path, "r", encoding="utf-8") as f:
+                split_manifest = json.load(f)
+            split_manifest["split_source_manifest"] = str(source_split_path)
+            train_items = [
+                {"image": item.get("image"), "source_entry": item}
+                for item in split_manifest.get("train", [])
+            ]
+        except Exception as exc:
+            print(f"[WARN] Could not read explicit source split {source_split_path}: {exc}")
+            return cam_infos
+
+    if split_manifest is None or train_items is None:
+        return cam_infos
+
+    metadata_by_stem = {}
+    for item in train_items:
+        image = item.get("image")
+        source_entry = item.get("source_entry") or {}
+        if not image or source_entry.get("kind") != "pseudo":
+            continue
+        raw_mask_path = source_entry.get("mask_path")
+        mask_path = _resolve_explicit_split_mask(
+            raw_mask_path,
+            split_manifest,
+            source_path,
+        ) if raw_mask_path else ""
+        metadata_by_stem[Path(image).stem] = {
+            "confidence_mask_path": mask_path,
+            "loss_weight": float(source_entry.get("loss_weight") or 1.0),
+        }
+
+    if not metadata_by_stem:
+        return cam_infos
+
+    marked = []
+    marked_count = 0
+    for cam in cam_infos:
+        meta = metadata_by_stem.get(cam.image_name)
+        if meta:
+            cam = cam._replace(
+                is_pseudo=True,
+                confidence_mask_path=meta["confidence_mask_path"],
+                loss_weight=meta["loss_weight"],
+            )
+            marked_count += 1
+        marked.append(cam)
+    print(f"[pseudo-as-real] Marked pseudo train cameras: {marked_count}/{len(cam_infos)}")
+    return marked
 
 
 
@@ -341,6 +455,8 @@ def readColmapSceneInfo(path, images, eval, args, llffhold=8):
         test_cam_infos = []
         train_poses = sorted_poses
         test_poses = []
+
+    train_cam_infos = attach_explicit_split_pseudo_metadata(path, args.model_path, train_cam_infos)
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
 

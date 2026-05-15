@@ -84,10 +84,10 @@ def process_scene(input_dir, output_dir, n_views, iterations, scene_graph, progr
         "--iterations", str(iterations),
         "--test_iterations", str(iterations),
 
-        # "--position_lr_init", "0.000016",
-        # "--position_lr_final", "0.00000016",
+        "--position_lr_init", "0.000016",
+        "--position_lr_final", "0.00000016",
         # "--feature_lr", "0.00025",
-        # "--scaling_lr", "0.0005",
+        "--scaling_lr", "0.0005",
         # "--rotation_lr", "0.0001",
         
         "--pp_optimizer",
@@ -135,7 +135,7 @@ with gr.Blocks() as demo:
             input_dir = gr.Textbox(label="Input Directory")
             output_dir = gr.Textbox(label="Output Directory")
             n_views = gr.Number(value=3, precision=0, minimum=2, label="Number of Views")
-            iterations = gr.Slider(minimum=1000, maximum=30000, value=1000, step=1000, label="Training Iterations")
+            iterations = gr.Slider(minimum=10, maximum=30000, value=1000, step=10, label="Training Iterations")
             scene_graph = gr.Dropdown(
                 choices=["complete", "swin-2-noncyclic", "swin-3-noncyclic", "logwin-3-noncyclic"],
                 value="complete",

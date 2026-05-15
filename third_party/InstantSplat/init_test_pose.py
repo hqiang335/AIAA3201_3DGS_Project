@@ -22,7 +22,7 @@ from utils.camera_utils import generate_interpolated_path
 
 
 def main(source_path, model_path, ckpt_path, device, batch_size, image_size, schedule, lr, niter, 
-         min_conf_thr, llffhold, n_views, co_vis_dsp, depth_thre, conf_aware_ranking=False, focal_avg=True, infer_video=False):
+         min_conf_thr, llffhold, n_views, n_test, co_vis_dsp, depth_thre, conf_aware_ranking=False, focal_avg=True, infer_video=False):
 
     # ---------------- (1) Load model and images ----------------  
     save_path, sparse_0_path, sparse_1_path = init_filestructure(Path(source_path), n_views)
@@ -32,7 +32,9 @@ def main(source_path, model_path, ckpt_path, device, batch_size, image_size, sch
     if infer_video:
         train_img_files = image_files
     else:
-        train_img_files, test_img_files = split_train_test(image_files, llffhold, n_views, verbose=True)
+        train_img_files, test_img_files = split_train_test(
+            image_files, llffhold, n_views, n_test=n_test, verbose=True
+        )
     
     # when init test pose, use all images
     image_files = train_img_files + test_img_files
@@ -51,7 +53,8 @@ def main(source_path, model_path, ckpt_path, device, batch_size, image_size, sch
     if focal_avg:
         focals_file = sparse_0_path / 'non_scaled_focals.npy'
         preset_focals = np.load(focals_file)
-        preset_focal = np.mean(preset_focals)
+        # preset_focal = np.mean(preset_focals)
+        preset_focal = float(np.mean(preset_focals))
         print(f">> preset_focal: {preset_focal}")
         
     print(f'>> Global alignment...')
@@ -105,7 +108,8 @@ if __name__ == "__main__":
     parser.add_argument('--niter', type=int, default=300, help='Number of iterations')
     parser.add_argument('--min_conf_thr', type=float, default=5, help='Minimum confidence threshold')
     parser.add_argument('--llffhold', type=int, default=8, help='')
-    parser.add_argument('--n_views', type=int, default=3, help='')
+    parser.add_argument('--n_views', type=int, default=3, help='Number of training views')
+    parser.add_argument('--n_test', type=int, default=12, help='Number of test views (must match init_geo)')
     # parser.add_argument('--focal_avg', type=bool, default=False, help='')
     parser.add_argument('--focal_avg', action="store_true")
     parser.add_argument('--conf_aware_ranking', action="store_true")
@@ -115,4 +119,4 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     main(args.source_path, args.model_path, args.ckpt_path, args.device, args.batch_size, args.image_size, args.schedule, args.lr, args.niter,         
-          args.min_conf_thr, args.llffhold, args.n_views, args.co_vis_dsp, args.depth_thre, args.conf_aware_ranking, args.focal_avg, args.infer_video)
+          args.min_conf_thr, args.llffhold, args.n_views, args.n_test, args.co_vis_dsp, args.depth_thre, args.conf_aware_ranking, args.focal_avg, args.infer_video)

@@ -9,6 +9,8 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+from __future__ import annotations
+
 from argparse import ArgumentParser, Namespace
 import sys
 import os
@@ -56,6 +58,7 @@ class ModelParams(ParamGroup):
         self.eval = False
         self.n_views = 0
         self.init_scale_from_view_depth = False
+        self.initial_gaussians_path = ""
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -88,10 +91,52 @@ class OptimizationParams(ParamGroup):
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
+        self.use_densification = False
         self.random_background = False
         self.pp_optimizer = False
         self.optim_pose = False
+        self.pose_freeze_iters = 0
+        self.pose_lr_scale = 1.0
+        self.use_pseudo_views = False
+        self.pseudo_manifest = ""
+        self.pseudo_start_iter = 1000
+        self.pseudo_ramp_until = 1000
+        self.pseudo_loss_weight = 0.1
+        self.pseudo_sample_ratio = 0.25
+        self.pseudo_pair_with_real = False
+        self.pseudo_use_densification = False
+        self.pseudo_rgb_weight = 1.0
+        self.pseudo_ssim_weight = 0.0
+        self.pseudo_lpips_weight = 0.0
+        self.pseudo_lpips_net = "vgg"
+        self.pseudo_charbonnier_weight = 0.0
+        self.pseudo_mask_gamma = 0.5
+        self.pseudo_confidence_floor = 0.25
+        self.pseudo_depth_weight = 0.0
+        self.pseudo_depth_loss = "relative_l1"
         super().__init__(parser, "Optimization Parameters")
+
+def default_train_learning_rates() -> dict[str, float]:
+    """Subset of OptimizationParams defaults forwarded to ``train.py`` (tuning knobs)."""
+    parser = ArgumentParser()
+    OptimizationParams(parser)
+    keys = frozenset(
+        {
+            "position_lr_init",
+            "position_lr_final",
+            "feature_lr",
+            "opacity_lr",
+            "scaling_lr",
+            "rotation_lr",
+            "percent_dense",
+            "densification_interval",
+            "opacity_reset_interval",
+            "densify_from_iter",
+            "densify_until_iter",
+            "densify_grad_threshold",
+        }
+    )
+    return {a.dest: a.default for a in parser._actions if getattr(a, "dest", None) in keys}
 
 def get_combined_args(parser : ArgumentParser):
     cmdlne_string = sys.argv[1:]

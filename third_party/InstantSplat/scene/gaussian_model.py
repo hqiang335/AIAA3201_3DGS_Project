@@ -26,6 +26,9 @@ from utils.graphics_utils import getWorld2View2
 from scene.per_point_adam import PerPointAdam
 
 
+GAUSSIAN_PARAM_NAMES = {"xyz", "f_dc", "f_rest", "opacity", "scaling", "rotation"}
+
+
 class GaussianModel:
 
     def setup_functions(self):
@@ -344,6 +347,8 @@ class GaussianModel:
     def _prune_optimizer(self, mask):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
+            if group["name"] not in GAUSSIAN_PARAM_NAMES:
+                continue
             stored_state = self.optimizer.state.get(group['params'][0], None)
             if stored_state is not None:
                 stored_state["exp_avg"] = stored_state["exp_avg"][mask]
@@ -378,6 +383,8 @@ class GaussianModel:
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
+            if group["name"] not in tensors_dict:
+                continue
             assert len(group["params"]) == 1
             extension_tensor = tensors_dict[group["name"]]
             stored_state = self.optimizer.state.get(group['params'][0], None)
@@ -461,8 +468,8 @@ class GaussianModel:
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
-        # self.densify_and_clone(grads, max_grad, extent)
-        # self.densify_and_split(grads, max_grad, extent)
+        self.densify_and_clone(grads, max_grad, extent)
+        self.densify_and_split(grads, max_grad, extent)
 
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:
