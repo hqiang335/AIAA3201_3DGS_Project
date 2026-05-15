@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="420" viewBox="0 0 1280 420">
+  <rect width="1280" height="420" fill="#fbfbfd"/>
+  <style>
+    .title{font:700 28px Arial,Helvetica,sans-serif;fill:#111827}
+    .h{font:700 18px Arial,Helvetica,sans-serif;fill:#111827}
+    .t{font:500 16px Arial,Helvetica,sans-serif;fill:#111827}
+    .m{font:700 20px Arial,Helvetica,sans-serif;fill:#0f172a}
+    .note{font:500 14px Arial,Helvetica,sans-serif;fill:#475569}
+  </style>
+  <text class="title" x="36" y="48">Visual result summary: final softfloor confidence supervision</text>
+  <text class="note" x="36" y="76">Higher PSNR/SSIM and lower LPIPS/ATE are better. ATE is aligned trajectory RMSE in normalized coordinates.</text>
+
+  <rect x="36" y="110" width="372" height="250" rx="18" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <text class="h" x="66" y="145">DL3DV-2</text>
+  <text class="m" x="66" y="192">20.78 PSNR</text>
+  <text class="t" x="66" y="226">SSIM 0.661</text>
+  <text class="t" x="66" y="254">LPIPS 0.252</text>
+  <text class="t" x="66" y="282">ATE 0.088</text>
+  <rect x="210" y="174" width="142" height="22" fill="#bfdbfe"/><rect x="210" y="174" width="118" height="22" fill="#2563eb"/>
+  <rect x="210" y="210" width="142" height="22" fill="#bfdbfe"/><rect x="210" y="210" width="94" height="22" fill="#2563eb"/>
+  <rect x="210" y="246" width="142" height="22" fill="#bfdbfe"/><rect x="210" y="246" width="90" height="22" fill="#60a5fa"/>
+  <text class="note" x="66" y="326">Softfloor improves background supervision over raw confidence.</text>
+
+  <rect x="454" y="110" width="372" height="250" rx="18" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+  <text class="h" x="484" y="145">RealEstate10K-1</text>
+  <text class="m" x="484" y="192">23.62 PSNR</text>
+  <text class="t" x="484" y="226">SSIM 0.850</text>
+  <text class="t" x="484" y="254">LPIPS 0.120</text>
+  <text class="t" x="484" y="282">ATE 0.027</text>
+  <rect x="628" y="174" width="142" height="22" fill="#bbf7d0"/><rect x="628" y="174" width="134" height="22" fill="#16a34a"/>
+  <rect x="628" y="210" width="142" height="22" fill="#bbf7d0"/><rect x="628" y="210" width="121" height="22" fill="#16a34a"/>
+  <rect x="628" y="246" width="142" height="22" fill="#bbf7d0"/><rect x="628" y="246" width="120" height="22" fill="#4ade80"/>
+  <text class="note" x="484" y="326">Pseudo views add intermediate supervision between sparse inputs.</text>
+
+  <rect x="872" y="110" width="372" height="250" rx="18" fill="#fff7ed" stroke="#f97316" stroke-width="2"/>
+  <text class="h" x="902" y="145">Waymo-405841 FRONT</text>
+  <text class="m" x="902" y="192">24.91 PSNR</text>
+  <text class="t" x="902" y="226">SSIM 0.829</text>
+  <text class="t" x="902" y="254">LPIPS 0.347</text>
+  <text class="t" x="902" y="282">ATE 0.102</text>
+  <rect x="1046" y="174" width="142" height="22" fill="#fed7aa"/><rect x="1046" y="174" width="141" height="22" fill="#f97316"/>
+  <rect x="1046" y="210" width="142" height="22" fill="#fed7aa"/><rect x="1046" y="210" width="118" height="22" fill="#f97316"/>
+  <rect x="1046" y="246" width="142" height="22" fill="#fed7aa"/><rect x="1046" y="246" width="76" height="22" fill="#fb923c"/>
+  <text class="note" x="902" y="326">Driving scenes use lower pose/scale learning rates.</text>
+
+  <text class="note" x="36" y="394">Recommended README usage: run real-only baseline, generate ViewCrafter + DiFix pseudo views, build MASt3R/DUSt3R confidence maps, then train with weighted pseudo loss.</text>
+</svg>
