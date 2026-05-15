@@ -26,6 +26,7 @@ AIAA3201_3DGS_Project/
         repair_test_poses_timeaware.py
         score_pseudo_temporal_consistency.py
       docs/
+        FINAL_REPRODUCTION.md
         VIEWCRAFTER_DIFIX_FUSED_ASREAL_PIPELINE.md
 ```
 
@@ -65,24 +66,137 @@ python setup.py build_ext --inplace
 cd ../../../
 ```
 
+## Reproducibility Checklist
+
+To reproduce the reported experiments from a fresh machine, prepare these items in order:
+
+1. Clone this repository with submodules.
+2. Install the `instantsplat` environment and compile the Gaussian rasterizer extensions.
+3. Download the MASt3R checkpoint used by InstantSplat geometry initialization.
+4. Prepare real datasets with an `images/` directory.
+5. Generate ViewCrafter pseudo views between adjacent sparse real-view pairs.
+6. Enhance pseudo views with DiFix3D+.
+7. Build MASt3R/DUSt3R cross-view confidence masks.
+8. Run `run_eval_pipeline.py` with `--use_pseudo_views`, `--pseudo_confidence_floor 0.25`, and `--pseudo_mask_gamma 0.5`.
+
+Quick sanity checks before launching long runs:
+
+```bash
+cd AIAA3201_3DGS_Project/third_party/InstantSplat
+python run_eval_pipeline.py --help
+python tools/build_pseudo_as_real_split.py --help
+
+test -f mast3r/checkpoints/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
+```
+
 ## Required Weights
 
-Create the following directories manually and download the weights:
+The repository does not store large weights. Use the copy-paste commands below.
+
+### InstantSplat Geometry: MASt3R
+
+This checkpoint is required by `init_geo.py` and `tools/build_reconx_dust3r_confidence.py`.
 
 ```bash
 cd AIAA3201_3DGS_Project/third_party/InstantSplat
 mkdir -p mast3r/checkpoints
 wget https://download.europe.naverlabs.com/ComputerVision/MASt3R/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth \
-  -P mast3r/checkpoints/
+  -O mast3r/checkpoints/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
 ```
 
-Additional generative models used to make pseudo views:
+### ViewCrafter Pseudo-View Generation
+
+ViewCrafter is run as a separate project, often on a separate GPU server. Official repository:
+
+```text
+https://github.com/Drexubery/ViewCrafter
+```
+
+Recommended setup:
+
+```bash
+git clone https://github.com/Drexubery/ViewCrafter.git
+cd ViewCrafter
+conda create -n viewcrafter python=3.9.16 -y
+conda activate viewcrafter
+pip install -r requirements.txt
+conda install https://anaconda.org/pytorch3d/pytorch3d/0.7.5/download/linux-64/pytorch3d-0.7.5-py39_cu117_pyt1131.tar.bz2 -y
+```
+
+ViewCrafter also expects the original DUSt3R checkpoint:
+
+```bash
+mkdir -p checkpoints
+wget https://download.europe.naverlabs.com/ComputerVision/DUSt3R/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth \
+  -O checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth
+```
+
+Download one ViewCrafter checkpoint. We used the smaller 512 checkpoint for the main DL3DV-2 pseudo-view generation because it fits more easily on 24GB GPUs:
+
+```bash
+pip install -U "huggingface_hub[cli]"
+huggingface-cli download Drexubery/ViewCrafter_25_512 model.ckpt \
+  --local-dir checkpoints \
+  --local-dir-use-symlinks False
+```
+
+If you have more memory and want the sparse-view-specific model:
+
+```bash
+huggingface-cli download Drexubery/ViewCrafter_25_sparse model_sparse.ckpt \
+  --local-dir checkpoints \
+  --local-dir-use-symlinks False
+```
+
+Model pages:
+
+```text
+https://huggingface.co/Drexubery/ViewCrafter_25_512
+https://huggingface.co/Drexubery/ViewCrafter_25_sparse
+```
+
+### DiFix3D+ Pseudo-View Enhancement
+
+Official DiFix3D+ repository and model:
+
+```text
+https://github.com/nv-tlabs/Difix3D
+https://huggingface.co/nvidia/difix_ref
+```
+
+Install beside this repository or pass its location with `--difix_repo`:
+
+```bash
+cd AIAA3201_3DGS_Project/third_party
+git clone https://github.com/nv-tlabs/Difix3D.git
+
+cd AIAA3201_3DGS_Project/third_party/InstantSplat
+conda activate instantsplat
+pip install -r tools/requirements_difix.txt
+pip install -U diffusers transformers accelerate huggingface_hub
+
+# Optional: pre-download the referenced DiFix3D+ weights into the HF cache.
+huggingface-cli download nvidia/difix_ref --local-dir /path/to/hf-cache/nvidia/difix_ref
+```
+
+The DiFix script default is:
+
+```text
+model_id = nvidia/difix_ref
+prompt = "remove degradation"
+num_inference_steps = 1
+timestep = 199
+guidance_scale = 0.0
+```
+
+### Summary of External Components
 
 | Component | Purpose | Weight / model identifier |
 | --- | --- | --- |
-| MASt3R / DUSt3R | pose, pointmap, confidence matching | `MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth` |
-| ViewCrafter | interpolation between adjacent sparse real views | use the official ViewCrafter checkpoints from its public repository |
-| DiFix3D+ | pseudo-view restoration / sharpening | Hugging Face model id `nvidia/difix_ref` |
+| MASt3R | InstantSplat pose / pointmap / confidence matching | `MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth` |
+| DUSt3R | ViewCrafter internal sparse reconstruction dependency | `DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth` |
+| ViewCrafter | interpolation between adjacent sparse real views | `Drexubery/ViewCrafter_25_512` or `Drexubery/ViewCrafter_25_sparse` |
+| DiFix3D+ | pseudo-view restoration / sharpening | `nvidia/difix_ref` |
 | LPIPS | perceptual pseudo-view loss | downloaded automatically by `lpips` |
 
 Datasets and generated pseudo views are not committed. Keep them under a large-data directory such as `/root/autodl-fs`.
@@ -156,7 +270,7 @@ For the DL3DV-2 setting in the report:
 See the detailed operational note:
 
 ```text
-third_party/InstantSplat/docs/VIEWCRAFTER_DIFIX_FUSED_ASREAL_PIPELINE.md
+third_party/InstantSplat/docs/FINAL_REPRODUCTION.md
 ```
 
 ## Build MASt3R/DUSt3R Confidence Masks
@@ -217,6 +331,23 @@ python run_eval_pipeline.py \
   --pseudo_mask_gamma 0.5
 ```
 
+This command assumes the pseudo manifest already contains confidence-mask paths produced by:
+
+```bash
+python tools/build_reconx_dust3r_confidence.py \
+  --pseudo_manifest /path/to/pseudo_manifest_fused_nomask_external.json \
+  --source_images_dir /path/to/DL3DV-2/images \
+  --output_dir /path/to/DL3DV-2-reconx-dust3r-confidence \
+  --image_size 512 \
+  --batch_size 1 \
+  --bidirectional_pairs \
+  --left_right_weight 1.0 \
+  --neighbor_weight 0.75 \
+  --all_pair_weight 0.5 \
+  --aggregate weighted_mean \
+  --mask_blur 1.0
+```
+
 For Waymo-405841 FRONT we found lower pose/scale learning rates more stable:
 
 ```bash
@@ -236,6 +367,103 @@ python run_eval_pipeline.py \
   --scaling_lr 0.0005 \
   --use_pseudo_views \
   --pseudo_manifest /path/to/FRONT_pseudo_manifest_reconx_dust3r_confidence.json \
+  --pseudo_start_iter 1 \
+  --pseudo_ramp_until 1 \
+  --pseudo_loss_weight 1.0 \
+  --pseudo_sample_ratio 1.0 \
+  --pseudo_pair_with_real \
+  --pseudo_rgb_weight 0.8 \
+  --pseudo_ssim_weight 0.2 \
+  --pseudo_lpips_weight 0.5 \
+  --pseudo_lpips_net vgg \
+  --pseudo_confidence_floor 0.25 \
+  --pseudo_mask_gamma 0.5
+```
+
+### Dataset Commands Used for the Final Table
+
+Use fixed train/test split manifests when comparing methods. If you do not pass `--split_manifest`, `run_eval_pipeline.py` will deterministically sample train/test images from the sorted `images/` folder, but exact table reproduction requires using the same split and pseudo manifest across ablations.
+
+DL3DV-2:
+
+```bash
+python run_eval_pipeline.py \
+  -s /path/to/DL3DV-2 \
+  -m /path/to/outputs/DL3DV-2-final-softfloor-5k \
+  --n_train 10 \
+  --n_test 12 \
+  --split_manifest /path/to/splits/DL3DV-2-10real-explicit-train-test.json \
+  -i 5000 \
+  -r 1 \
+  --scene_graph logwin-3-noncyclic \
+  --max_init_points 0 \
+  --point_conf_threshold 0 \
+  --optim_test_pose_iter 500 \
+  --use_pseudo_views \
+  --pseudo_manifest /path/to/DL3DV-2-reconx-dust3r-confidence/pseudo_manifest_reconx_dust3r_confidence.json \
+  --pseudo_start_iter 1 \
+  --pseudo_ramp_until 1 \
+  --pseudo_loss_weight 1.0 \
+  --pseudo_sample_ratio 1.0 \
+  --pseudo_pair_with_real \
+  --pseudo_rgb_weight 0.8 \
+  --pseudo_ssim_weight 0.2 \
+  --pseudo_lpips_weight 0.5 \
+  --pseudo_lpips_net vgg \
+  --pseudo_confidence_floor 0.25 \
+  --pseudo_mask_gamma 0.5
+```
+
+Re10k-1:
+
+```bash
+python run_eval_pipeline.py \
+  -s /path/to/Re10k-1 \
+  -m /path/to/outputs/Re10k-1-final-softfloor-5k \
+  --n_train 9 \
+  --n_test 12 \
+  --split_manifest /path/to/splits/Re10k-1-9real-explicit-train-test.json \
+  -i 5000 \
+  -r 1 \
+  --scene_graph logwin-3-noncyclic \
+  --max_init_points 0 \
+  --point_conf_threshold 0 \
+  --optim_test_pose_iter 500 \
+  --use_pseudo_views \
+  --pseudo_manifest /path/to/Re10k-1-reconx-dust3r-confidence/pseudo_manifest_reconx_dust3r_confidence.json \
+  --pseudo_start_iter 1 \
+  --pseudo_ramp_until 1 \
+  --pseudo_loss_weight 1.0 \
+  --pseudo_sample_ratio 1.0 \
+  --pseudo_pair_with_real \
+  --pseudo_rgb_weight 0.8 \
+  --pseudo_ssim_weight 0.2 \
+  --pseudo_lpips_weight 0.5 \
+  --pseudo_lpips_net vgg \
+  --pseudo_confidence_floor 0.25 \
+  --pseudo_mask_gamma 0.5
+```
+
+Waymo-405841 FRONT:
+
+```bash
+python run_eval_pipeline.py \
+  -s /path/to/405841/FRONT \
+  -m /path/to/outputs/FRONT-final-softfloor-5k-lowlr-r4 \
+  --n_train 20 \
+  --n_test 12 \
+  --split_manifest /path/to/splits/FRONT-20real-explicit-train-test.json \
+  -i 5000 \
+  -r 4 \
+  --scene_graph logwin-3-noncyclic \
+  --max_init_points 0 \
+  --point_conf_threshold 0 \
+  --optim_test_pose_iter 500 \
+  --position_lr_init 0.000016 \
+  --position_lr_final 0.00000016 \
+  --scaling_lr 0.0005 \
+  --use_pseudo_views \
+  --pseudo_manifest /path/to/FRONT-reconx-dust3r-confidence/pseudo_manifest_reconx_dust3r_confidence.json \
   --pseudo_start_iter 1 \
   --pseudo_ramp_until 1 \
   --pseudo_loss_weight 1.0 \
