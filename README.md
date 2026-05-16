@@ -477,21 +477,6 @@ python run_eval_pipeline.py \
   --pseudo_mask_gamma 0.5
 ```
 
-## Main Results
-
-The numbers below are from the report tables for the final course datasets. ATE is aligned trajectory RMSE in the normalized reconstruction coordinate system.
-
-| Method | DL3DV PSNR higher | DL3DV SSIM higher | DL3DV LPIPS lower | DL3DV ATE lower | Re10k PSNR higher | Re10k SSIM higher | Re10k LPIPS lower | Re10k ATE lower | Waymo PSNR higher | Waymo SSIM higher | Waymo LPIPS lower | Waymo ATE lower |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Ours, raw confidence | 20.63 | **0.666** | 0.279 | 0.087 | 23.70 | 0.849 | 0.120 | 0.027 | **25.17** | 0.799 | **0.230** | 0.102 |
-| Ours, softfloor confidence | **20.78** | 0.661 | **0.252** | 0.088 | 23.62 | **0.850** | **0.120** | 0.027 | 24.91 | **0.829** | 0.347 | 0.102 |
-
-![Result summary](docs/assets/final_results_summary.svg)
-
-We also keep a Part-1 visual diagnostic for initialization quality:
-
-![VGGT initialization diagnostic](Part1_Scripts/compare_extrinsics_dl3dv_vggt300k.png)
-
 ## Notes and Limitations
 
 - Generated pseudo views can improve coverage, but they can also introduce inconsistent content. The final pipeline therefore uses them as weighted supervision rather than as geometry seeds.
